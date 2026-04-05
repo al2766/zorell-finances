@@ -1,0 +1,105 @@
+export interface Bill {
+  id: string
+  name: string
+  day: number
+  amount: number
+  category: 'subscription' | 'utility' | 'debt' | 'housing' | 'personal'
+  startsMonth?: number
+  startsYear?: number
+  endsMonth: number | null
+  endsYear: number | null
+  moveable: boolean
+}
+
+export interface Holiday {
+  name: string
+  startDate: string
+  endDate: string
+  workingDaysLost: number
+  afjLost: number
+}
+
+export const BILLS: Bill[] = [
+  { id: 'apple-storage', name: 'Apple storage', day: 1, amount: 8.99, category: 'subscription', endsMonth: null, endsYear: null, moveable: true },
+  { id: 'wifi', name: 'WiFi', day: 2, amount: 24.00, category: 'utility', endsMonth: null, endsYear: null, moveable: true },
+  { id: 'cat-lenses', name: 'Catarina lenses', day: 3, amount: 23.00, category: 'personal', endsMonth: null, endsYear: null, moveable: true },
+  { id: 'klarna-new', name: 'Klarna', day: 3, amount: 11.55, category: 'debt', endsMonth: 6, endsYear: 2026, moveable: false },
+  { id: 'cat-apple', name: 'Catarina Apple', day: 5, amount: 5.99, category: 'personal', endsMonth: null, endsYear: null, moveable: true },
+  { id: 'channel4', name: 'Channel 4', day: 5, amount: 3.99, category: 'subscription', startsMonth: 5, startsYear: 2026, endsMonth: null, endsYear: null, moveable: true },
+  { id: 'amazon-prime', name: 'Amazon Prime', day: 6, amount: 8.99, category: 'subscription', endsMonth: null, endsYear: null, moveable: true },
+  { id: 'rent', name: 'Rent', day: 8, amount: 407.56, category: 'housing', endsMonth: null, endsYear: null, moveable: false },
+  { id: 'ionos', name: 'Ionos', day: 8, amount: 7.50, category: 'subscription', endsMonth: null, endsYear: null, moveable: true },
+  { id: 'chatgpt', name: 'ChatGPT', day: 9, amount: 20.00, category: 'subscription', endsMonth: null, endsYear: null, moveable: true },
+  { id: 'lowell', name: 'Lowell', day: 9, amount: 10.00, category: 'debt', endsMonth: null, endsYear: null, moveable: false },
+  { id: 'pra-monzo', name: 'Pra Monzo', day: 9, amount: 15.00, category: 'debt', endsMonth: null, endsYear: null, moveable: false },
+  { id: 'jaja', name: 'Jaja', day: 10, amount: 391.00, category: 'debt', endsMonth: 7, endsYear: 2026, moveable: false },
+  { id: 'ao-plan-1', name: 'AO Plan 1', day: 10, amount: 51.50, category: 'debt', endsMonth: 6, endsYear: 2026, moveable: false },
+  { id: 'ao-plan-2', name: 'AO Plan 2', day: 10, amount: 21.59, category: 'debt', endsMonth: 11, endsYear: 2026, moveable: false },
+  { id: 'ao-plan-3', name: 'AO Plan 3', day: 10, amount: 45.67, category: 'debt', endsMonth: 5, endsYear: 2026, moveable: false },
+  { id: 'ao-plan-4', name: 'AO Plan 4', day: 10, amount: 78.59, category: 'debt', endsMonth: 8, endsYear: 2026, moveable: false },
+  { id: 'sofa-novuna', name: 'Sofa/Novuna', day: 10, amount: 76.50, category: 'debt', endsMonth: 11, endsYear: 2027, moveable: false },
+  { id: 'my-phone', name: 'My phone', day: 10, amount: 15.00, category: 'personal', endsMonth: null, endsYear: null, moveable: true },
+  { id: 'kindle', name: 'Kindle', day: 13, amount: 9.49, category: 'subscription', endsMonth: null, endsYear: null, moveable: true },
+  { id: 'council-tax', name: 'Council tax', day: 16, amount: 70.28, category: 'housing', endsMonth: null, endsYear: null, moveable: false },
+  { id: 'cat-mobile', name: 'Cat mobile', day: 20, amount: 12.00, category: 'personal', endsMonth: null, endsYear: null, moveable: true },
+  { id: 'electric', name: 'Electric', day: 21, amount: 34.00, category: 'utility', endsMonth: null, endsYear: null, moveable: true },
+  { id: 'water', name: 'Water', day: 26, amount: 24.46, category: 'utility', endsMonth: null, endsYear: null, moveable: false },
+  { id: 'gas', name: 'Gas', day: 27, amount: 65.98, category: 'utility', endsMonth: null, endsYear: null, moveable: false },
+  { id: 'claude', name: 'Claude', day: 28, amount: 18.00, category: 'subscription', endsMonth: null, endsYear: null, moveable: true },
+]
+
+export const HOLIDAYS: Holiday[] = [
+  { name: 'Easter', startDate: '2026-04-03', endDate: '2026-04-17', workingDaysLost: 11, afjLost: 935 },
+  { name: 'Summer half term', startDate: '2026-05-26', endDate: '2026-05-29', workingDaysLost: 4, afjLost: 340 },
+  { name: 'Teacher training', startDate: '2026-07-26', endDate: '2026-07-29', workingDaysLost: 2, afjLost: 170 },
+  { name: 'Summer holidays', startDate: '2026-08-23', endDate: '2026-08-31', workingDaysLost: 7, afjLost: 595 },
+  { name: 'Teacher training', startDate: '2026-09-01', endDate: '2026-09-02', workingDaysLost: 2, afjLost: 170 },
+  { name: 'Autumn half term', startDate: '2026-10-27', endDate: '2026-10-31', workingDaysLost: 5, afjLost: 425 },
+  { name: 'Christmas', startDate: '2026-12-18', endDate: '2027-01-02', workingDaysLost: 12, afjLost: 1020 },
+]
+
+// Car costs
+export function getCarCost(month: number, year: number): { weekly: number; monthly: number; fuel: number } {
+  // April 2026: Seat Leon £100/wk
+  if (year === 2026 && month === 4) {
+    return { weekly: 100, monthly: 433, fuel: 525 }
+  }
+  // May 2026 onwards: Corolla £250/wk rent-to-buy
+  return { weekly: 250, monthly: 1083, fuel: 525 }
+}
+
+// AFJ rate
+export const AFJ_DAILY_RATE = 85
+export const AFJ_FULL_TERM_DAYS = 20
+export const AFJ_FULL_TERM = 1700
+
+// Default Uber/Bolt target
+export const DEFAULT_DAILY_TARGET = 70
+
+// Category colors
+export const CATEGORY_COLORS: Record<string, string> = {
+  debt: '#ff3b30',
+  housing: '#007aff',
+  utility: '#34c759',
+  subscription: '#ff9500',
+  personal: '#8e8e93',
+}
+
+export const CATEGORY_BG: Record<string, string> = {
+  debt: 'bg-red-100 text-red-700',
+  housing: 'bg-blue-100 text-blue-700',
+  utility: 'bg-green-100 text-green-700',
+  subscription: 'bg-amber-100 text-amber-700',
+  personal: 'bg-gray-100 text-gray-600',
+}
+
+// Month names
+export const MONTH_NAMES = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'
+]
+
+export const MONTH_SHORT = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+]
