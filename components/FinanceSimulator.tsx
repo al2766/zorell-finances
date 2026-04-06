@@ -896,7 +896,9 @@ function BalanceOverrideModal({
   hasExisting: boolean
   theme: ThemeTokens
 }) {
-  const [value, setValue] = useState(state.currentValue)
+  const [absValue, setAbsValue] = useState(Math.abs(state.currentValue))
+  const [isNegative, setIsNegative] = useState(state.currentValue < 0)
+  const finalValue = isNegative ? -absValue : absValue
 
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
@@ -938,29 +940,61 @@ function BalanceOverrideModal({
           <label style={{ fontSize: 12, color: theme.textSecondary, marginBottom: 6, display: 'block' }}>
             Bills pot balance after this day (£)
           </label>
-          <input
-            type="number"
-            value={value}
-            onChange={e => setValue(Number(e.target.value))}
-            autoFocus
-            style={{
-              background: theme.cardAlt,
-              border: `1px solid ${theme.border}`,
-              borderRadius: 8,
-              color: theme.textPrimary,
-              padding: '10px 12px',
-              fontSize: 18,
-              fontWeight: 700,
-              width: '100%',
-              outline: 'none',
-              fontFamily: 'inherit',
-              textAlign: 'center',
-            }}
-          />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {/* +/- toggle */}
+            <button
+              onClick={() => setIsNegative(n => !n)}
+              style={{
+                flexShrink: 0,
+                width: 44, height: 44,
+                borderRadius: 8,
+                border: `1px solid ${isNegative ? theme.red : theme.green}`,
+                background: isNegative ? `${theme.red}18` : `${theme.green}18`,
+                color: isNegative ? theme.red : theme.green,
+                fontSize: 22, fontWeight: 700,
+                cursor: 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}
+            >
+              {isNegative ? '−' : '+'}
+            </button>
+            <input
+              type="number"
+              min={0}
+              step={0.01}
+              value={absValue}
+              onChange={e => {
+                const raw = e.target.value
+                const parsed = parseFloat(raw)
+                if (!isNaN(parsed)) setAbsValue(Math.round(parsed * 100) / 100)
+              }}
+              onBlur={e => {
+                const parsed = parseFloat(e.target.value)
+                setAbsValue(isNaN(parsed) ? 0 : Math.round(Math.abs(parsed) * 100) / 100)
+              }}
+              autoFocus
+              style={{
+                background: theme.cardAlt,
+                border: `1px solid ${theme.border}`,
+                borderRadius: 8,
+                color: isNegative ? theme.red : theme.textPrimary,
+                padding: '10px 12px',
+                fontSize: 18,
+                fontWeight: 700,
+                flex: 1,
+                outline: 'none',
+                fontFamily: 'inherit',
+                textAlign: 'center',
+              }}
+            />
+          </div>
+          <div style={{ fontSize: 11, color: theme.textMuted, marginTop: 6, textAlign: 'center' }}>
+            Final value: {isNegative ? '−' : '+'}£{absValue.toFixed(2)}
+          </div>
         </div>
         <div style={{ display: 'flex', gap: 10, marginBottom: hasExisting ? 10 : 0 }}>
           <button
-            onClick={() => { onSave(state.dateKey, value); onClose() }}
+            onClick={() => { onSave(state.dateKey, finalValue); onClose() }}
             style={{
               flex: 1, background: theme.green, color: '#fff', border: 'none',
               borderRadius: 8, padding: '10px', fontSize: 14, fontWeight: 700,
@@ -2537,6 +2571,809 @@ function MonthTotals({ days, sliders, theme }: { days: DayData[]; sliders: Slide
   )
 }
 
+// ─── AI Tab ─────────────────────────────────────────────────────
+
+interface AiProposal {
+  id: string
+  title: string
+  description: string
+  createdAt: string
+  sliders?: Partial<Sliders>
+  billDayOverrides?: Record<string, number>
+  endPots: number[]
+  redDayCount: number
+  totalSavings: number
+}
+
+function buildDataDump(
+  allSimulations: { month: MonthOption; days: DayData[]; endPot: number; ringFenceAccumulated: number }[],
+  sliders: Sliders,
+  settings: Settings,
+  customBills: CustomBill[],
+  hiddenBillIds: Set<string>,
+  todayKey: string,
+): string {
+  const today = new Date()
+  const payday = settings.paydayDay ?? 8
+  const todayMonth = today.getMonth() + 1
+  const todayYear = today.getFullYear()
+  const todayDay = today.getDate()
+
+  // Determine cycle
+  const cycleMonth = todayDay < payday
+    ? (todayMonth === 1 ? { m: 12, y: todayYear - 1 } : { m: todayMonth - 1, y: todayYear })
+    : { m: todayMonth, y: todayYear }
+  const cycleEnd = payday - 1
+  const cycleNextMonth = cycleMonth.m === 12 ? 1 : cycleMonth.m + 1
+  const cycleNextYear = cycleMonth.m === 12 ? cycleMonth.y + 1 : cycleMonth.y
+  const cycleEndLabel = `${MONTH_SHORT[cycleNextMonth - 1]} ${cycleNextYear} ${String(cycleEnd).padStart(2, '0')}`
+  const cycleStartLabel = `${MONTH_SHORT[cycleMonth.m - 1]} ${cycleMonth.y} ${String(payday).padStart(2, '0')}`
+
+  const lines: string[] = []
+  lines.push('=== FINANCES SIMULATION STATE ===')
+  lines.push(`Date: ${todayKey}  Cycle: ${cycleStartLabel} → ${cycleEndLabel}  Payday: ${payday}th`)
+  lines.push('')
+
+  lines.push('--- SETTINGS ---')
+  const carApr = getCarSettings(4, 2026, settings)
+  const carMay = getCarSettings(5, 2026, settings)
+  lines.push(`AFJ daily rate: £${settings.afjDailyRate}  |  Pay cycle day: ${payday}`)
+  lines.push(`Car (Apr 2026): £${carApr.carWeeklyRent}/wk  |  Tank: £${carApr.tankPrice}  |  Fill every: ${carApr.fillEveryDays}d  |  Daily miles: ${carApr.dailyMiles}  |  Wkd miles: ${settings.weekendDailyMiles ?? 60}`)
+  if (settings.carChanges.length > 0) {
+    const c = settings.carChanges[0]
+    lines.push(`Car (${MONTH_SHORT[c.fromMonth - 1]} ${c.fromYear}+): £${c.carWeeklyRent}/wk  |  Tank: £${c.tankPrice}  |  Fill every: ${c.fillEveryDays}d  |  Daily miles: ${c.dailyMiles}`)
+  }
+  lines.push('')
+
+  lines.push('--- INCOME SLIDERS ---')
+  lines.push(`Normal day: £${sliders.normalDayRate}/d  |  Off-day (holiday): £${sliders.offDayRate}/d  |  Bills pot/d: £${sliders.billsPerDay}`)
+  lines.push(`Savings on extra: £${sliders.savingsOnExtra}  |  Holiday carry-over/d: £${sliders.offDaySplit}`)
+  lines.push('')
+
+  const activeBillsList = customBills.filter(cb => !hiddenBillIds.has(cb.id) && cb.frequency === 'monthly')
+  lines.push(`--- BILLS (${activeBillsList.length} active monthly, excluding hidden) ---`)
+  const sorted = [...activeBillsList].sort((a, b) => (a.dayOfMonth ?? 1) - (b.dayOfMonth ?? 1))
+  for (const b of sorted) {
+    const endStr = b.endsMonth && b.endsYear ? `  ends ${MONTH_SHORT[b.endsMonth - 1]} ${b.endsYear}` : ''
+    const startStr = b.startsMonth && b.startsYear ? `  from ${MONTH_SHORT[b.startsMonth - 1]} ${b.startsYear}` : ''
+    lines.push(`Day ${String(b.dayOfMonth ?? 1).padStart(2)}: ${b.name.padEnd(22)} £${b.amount.toFixed(2)}/mo${startStr}${endStr}`)
+  }
+  lines.push('')
+
+  lines.push('--- MONTH SUMMARY ---')
+  for (const sim of allSimulations) {
+    const { month, days, endPot } = sim
+    const totalIncome = days.reduce((s, d) => s + d.income + d.afjIn, 0)
+    const totalBills = days.reduce((s, d) => s + d.billsDue, 0)
+    const worstPot = days.length > 0 ? Math.min(...days.map(d => d.billsPotAfter)) : 0
+    const redDays = days.filter(d => d.isPotNegative).length
+    lines.push(`${month.label}: End pot £${Math.round(endPot)}  |  Worst day £${Math.round(worstPot)}  |  Total income £${Math.round(totalIncome)}  |  Total bills £${Math.round(totalBills)}  |  Red days: ${redDays}`)
+  }
+  lines.push('')
+
+  lines.push('--- GOALS ---')
+  lines.push('Maximize: green days, savings pot, spending money')
+  lines.push('Minimize: red days, minimum daily earnings required')
+  lines.push('Constraints: bill due dates (some fixed), pay cycle day 8th')
+
+  return lines.join('\n')
+}
+
+function AiDataPanel({
+  allSimulations,
+  sliders,
+  settings,
+  customBills,
+  hiddenBillIds,
+  todayKey,
+  theme,
+}: {
+  allSimulations: { month: MonthOption; days: DayData[]; endPot: number; ringFenceAccumulated: number }[]
+  sliders: Sliders
+  settings: Settings
+  customBills: CustomBill[]
+  hiddenBillIds: Set<string>
+  todayKey: string
+  theme: ThemeTokens
+}) {
+  const [copied, setCopied] = useState(false)
+  const dump = buildDataDump(allSimulations, sliders, settings, customBills, hiddenBillIds, todayKey)
+
+  function copyAll() {
+    navigator.clipboard.writeText(dump).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    })
+  }
+
+  return (
+    <div style={{
+      background: theme.cardAlt,
+      border: `1px solid ${theme.border}`,
+      borderRadius: 12,
+      overflow: 'hidden',
+      marginBottom: 16,
+    }}>
+      <div style={{
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        padding: '12px 16px',
+        borderBottom: `1px solid ${theme.border}`,
+        background: theme.card,
+      }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: theme.textPrimary }}>Simulation data dump</span>
+        <button
+          onClick={copyAll}
+          style={{
+            background: copied ? `${theme.green}22` : `${theme.blue}22`,
+            border: `1px solid ${copied ? theme.green : theme.blue}66`,
+            color: copied ? theme.green : theme.blue,
+            borderRadius: 7, padding: '5px 12px', fontSize: 12, fontWeight: 600,
+            cursor: 'pointer', fontFamily: 'inherit',
+          }}
+        >
+          {copied ? 'Copied!' : 'Copy all'}
+        </button>
+      </div>
+      <pre style={{
+        fontFamily: '"SF Mono", "Fira Code", "Fira Mono", "Roboto Mono", monospace',
+        fontSize: 11,
+        lineHeight: 1.6,
+        color: theme.textSecondary,
+        padding: '14px 16px',
+        margin: 0,
+        overflowX: 'auto',
+        whiteSpace: 'pre',
+        maxHeight: 320,
+        overflowY: 'auto',
+      }}>
+        {dump}
+      </pre>
+    </div>
+  )
+}
+
+function ProposalSimView({
+  proposal,
+  settings,
+  customBills,
+  hiddenBillIds,
+  balanceOverrides,
+  allWeekendStates,
+  theme,
+  onClose,
+}: {
+  proposal: AiProposal
+  settings: Settings
+  customBills: CustomBill[]
+  hiddenBillIds: Set<string>
+  balanceOverrides: Record<string, number>
+  allWeekendStates: Record<string, WeekendState>
+  theme: ThemeTokens
+  onClose: () => void
+}) {
+  const mergedSliders: Sliders = {
+    normalDayRate: 70,
+    offDayRate: 150,
+    billsPerDay: 20,
+    savingsOnExtra: 10,
+    offDaySplit: 40,
+    ...(proposal.sliders ?? {}),
+  }
+
+  const simResults = useMemo(() => {
+    let pot = 0
+    let prevRingFence = 0
+    return MONTHS.map(m => {
+      const wkdKey = `fin-weekends-${m.year}-${String(m.month).padStart(2, '0')}`
+      const wkdState: WeekendState = allWeekendStates[wkdKey] ?? { workedDays: [], weekendRate: 80, weekendBillsPerDay: 20, weekendSavings: 10 }
+      const overrides = proposal.billDayOverrides ?? {}
+      const { days, endPot, ringFenceAccumulated } = simulateCycle(
+        m.month, m.year, mergedSliders, settings, overrides, pot, prevRingFence,
+        wkdState.workedDays, wkdState.weekendRate, customBills, hiddenBillIds,
+        wkdState.weekendBillsPerDay, wkdState.weekendSavings, balanceOverrides, null,
+      )
+      pot = endPot
+      prevRingFence = ringFenceAccumulated
+      return { month: m, days, endPot }
+    })
+  }, [proposal, settings, customBills, hiddenBillIds, balanceOverrides, allWeekendStates, mergedSliders])
+
+  useEffect(() => {
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', handleKey)
+    return () => window.removeEventListener('keydown', handleKey)
+  }, [onClose])
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 700,
+      background: theme.bg, overflowY: 'auto',
+      display: 'flex', flexDirection: 'column',
+    }}>
+      {/* Header */}
+      <div style={{
+        position: 'sticky', top: 0, zIndex: 10,
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '14px 16px',
+        background: theme.bg,
+        borderBottom: `1px solid ${theme.border}`,
+      }}>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: theme.textPrimary }}>
+            Proposal: {proposal.title}
+          </div>
+          <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 2 }}>
+            {proposal.description}
+          </div>
+        </div>
+        <button
+          onClick={onClose}
+          style={{
+            background: 'transparent', border: `1px solid ${theme.border}`,
+            color: theme.textSecondary, borderRadius: 8, padding: '6px 10px',
+            cursor: 'pointer', flexShrink: 0,
+          }}
+        >
+          <CloseIcon size={18} />
+        </button>
+      </div>
+
+      {/* Banner */}
+      <div style={{
+        background: `${theme.amber}18`,
+        border: `1px solid ${theme.amber}44`,
+        borderRadius: 8,
+        margin: '12px 12px 0',
+        padding: '8px 14px',
+        fontSize: 12,
+        color: theme.amber,
+        fontWeight: 600,
+      }}>
+        This is a simulation preview — your real data is unchanged
+      </div>
+
+      {/* Slider diffs */}
+      {proposal.sliders && Object.keys(proposal.sliders).length > 0 && (
+        <div style={{
+          margin: '12px 12px 0',
+          background: theme.card,
+          border: `1px solid ${theme.border}`,
+          borderRadius: 10,
+          padding: '12px 14px',
+        }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: theme.blueLight, marginBottom: 8 }}>
+            Proposed slider changes
+          </div>
+          {(Object.entries(proposal.sliders) as [keyof Sliders, number][]).map(([key, val]) => (
+            <div key={key} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}>
+              <span style={{ color: theme.textSecondary }}>{key}</span>
+              <span style={{ fontWeight: 700, color: theme.green }}>£{val}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Bill day overrides */}
+      {proposal.billDayOverrides && Object.keys(proposal.billDayOverrides).length > 0 && (
+        <div style={{
+          margin: '10px 12px 0',
+          background: theme.card,
+          border: `1px solid ${theme.border}`,
+          borderRadius: 10,
+          padding: '12px 14px',
+        }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: theme.blueLight, marginBottom: 8 }}>
+            Proposed bill day changes
+          </div>
+          {Object.entries(proposal.billDayOverrides).map(([billId, day]) => (
+            <div key={billId} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}>
+              <span style={{ color: theme.textSecondary }}>{billId}</span>
+              <span style={{ fontWeight: 700, color: theme.blue }}>Day {day}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Simulated months */}
+      <div style={{ padding: '12px 12px 32px' }}>
+        {simResults.map(({ month, days, endPot }) => {
+          const redDays = days.filter(d => d.isPotNegative).length
+          const totalIncome = days.reduce((s, d) => s + d.income + d.afjIn, 0)
+          return (
+            <div key={month.label} style={{ marginBottom: 12 }}>
+              <div style={{
+                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                padding: '8px 12px',
+                background: theme.card,
+                border: `1px solid ${theme.border}`,
+                borderRadius: '10px 10px 0 0',
+              }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: theme.textPrimary }}>{month.label}</span>
+                <div style={{ display: 'flex', gap: 12 }}>
+                  <span style={{ fontSize: 12, color: redDays > 0 ? theme.red : theme.green }}>
+                    {redDays} red days
+                  </span>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: endPot >= 0 ? theme.green : theme.red, fontVariantNumeric: 'tabular-nums' }}>
+                    End: {endPot >= 0 ? '+' : ''}{Math.round(endPot)}
+                  </span>
+                  <span style={{ fontSize: 12, color: theme.textMuted }}>
+                    In: £{Math.round(totalIncome)}
+                  </span>
+                </div>
+              </div>
+              <div style={{ background: theme.cardAlt, border: `1px solid ${theme.border}`, borderTop: 'none', borderRadius: '0 0 10px 10px', overflow: 'hidden' }}>
+                {days.slice(0, 15).map((day, i) => {
+                  const potColor = day.billsPotAfter >= 0 ? theme.green : theme.red
+                  const dayOfWeekShort = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][day.dayOfWeek]
+                  return (
+                    <div
+                      key={i}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 10,
+                        padding: '7px 12px',
+                        borderBottom: i < Math.min(days.length, 15) - 1 ? `1px solid ${theme.border}` : 'none',
+                        opacity: day.isRestDay ? 0.5 : 1,
+                        background: day.isPotNegative ? `${theme.red}0a` : 'transparent',
+                      }}
+                    >
+                      <span style={{ width: 32, fontSize: 12, fontWeight: 700, color: theme.textSecondary, flexShrink: 0 }}>
+                        {MONTH_SHORT[day.date.getMonth()]}{day.dayOfMonth}
+                      </span>
+                      <span style={{ width: 28, fontSize: 10, color: theme.textMuted, flexShrink: 0 }}>
+                        {dayOfWeekShort}
+                      </span>
+                      <span style={{ flex: 1, fontSize: 11, color: theme.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {day.isRestDay ? 'REST' : day.isSchoolHolidayWeekday ? `HOL: ${day.holidayName ?? ''}` : day.isPayday ? 'PAYDAY' : day.billDetails.length > 0 ? day.billDetails.map(b => b.name).join(', ') : ''}
+                      </span>
+                      {day.income > 0 && (
+                        <span style={{ fontSize: 11, color: theme.green, fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>
+                          +{Math.round(day.income)}
+                        </span>
+                      )}
+                      {(day.billsDue + day.carCost + day.fuelCost) > 0 && (
+                        <span style={{ fontSize: 11, color: theme.red, fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>
+                          -{Math.round(day.billsDue + day.carCost + day.fuelCost)}
+                        </span>
+                      )}
+                      <span style={{ fontSize: 13, fontWeight: 800, color: potColor, fontVariantNumeric: 'tabular-nums', flexShrink: 0, minWidth: 48, textAlign: 'right' }}>
+                        {day.billsPotAfter < 0 ? '-' : ''}£{Math.abs(Math.round(day.billsPotAfter))}
+                      </span>
+                    </div>
+                  )
+                })}
+                {days.length > 15 && (
+                  <div style={{ padding: '6px 12px', fontSize: 11, color: theme.textMuted, textAlign: 'center' }}>
+                    ...and {days.length - 15} more days
+                  </div>
+                )}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function GenerateModal({
+  dump,
+  onClose,
+  onLoad,
+  theme,
+}: {
+  dump: string
+  onClose: () => void
+  onLoad: (proposals: AiProposal[]) => void
+  theme: ThemeTokens
+}) {
+  const [pasteJson, setPasteJson] = useState('')
+  const [parseError, setParseError] = useState<string | null>(null)
+  const [cmdCopied, setCmdCopied] = useState(false)
+
+  const command = `claude --dangerously-skip-permissions "$(cat <<'PROMPT'\nYou are analyzing a personal finances simulation app.\n\n${dump}\n\nYour task: generate 3 proposals to optimize this person's finances.\nFor each proposal:\n1. Give it a short title (e.g. "Shift debt cluster")\n2. Write 1-2 sentence description of the strategy\n3. Specify any bill day changes: { "bill-id": newDay }\n4. Specify any slider changes: { "normalDayRate": X, "billsPerDay": X, etc }\n5. Predict: end pot improvement, red day reduction\n\nOutput ONLY valid JSON in this exact format:\n[\n  {\n    "id": "prop-1",\n    "title": "...",\n    "description": "...",\n    "sliders": { ... },\n    "billDayOverrides": { ... },\n    "endPots": [],\n    "redDayCount": 0,\n    "totalSavings": 0\n  }\n]\n\nOutput the JSON array only. No explanation outside the JSON.\nPROMPT\n)"`
+
+  useEffect(() => {
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', handleKey)
+    return () => window.removeEventListener('keydown', handleKey)
+  }, [onClose])
+
+  function copyCmd() {
+    navigator.clipboard.writeText(command).then(() => {
+      setCmdCopied(true)
+      setTimeout(() => setCmdCopied(false), 2000)
+    })
+  }
+
+  function loadProposals() {
+    setParseError(null)
+    try {
+      const parsed = JSON.parse(pasteJson.trim()) as unknown
+      if (!Array.isArray(parsed)) {
+        setParseError('Expected a JSON array')
+        return
+      }
+      const proposals: AiProposal[] = (parsed as Record<string, unknown>[]).map((p, i) => ({
+        id: String(p.id ?? `prop-${Date.now()}-${i}`),
+        title: String(p.title ?? 'Untitled'),
+        description: String(p.description ?? ''),
+        createdAt: new Date().toISOString(),
+        sliders: (p.sliders as Partial<Sliders>) ?? undefined,
+        billDayOverrides: (p.billDayOverrides as Record<string, number>) ?? undefined,
+        endPots: Array.isArray(p.endPots) ? (p.endPots as number[]) : [],
+        redDayCount: Number(p.redDayCount ?? 0),
+        totalSavings: Number(p.totalSavings ?? 0),
+      }))
+      onLoad(proposals)
+      onClose()
+    } catch (e) {
+      setParseError(`Invalid JSON: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 800,
+        background: theme.overlay,
+        display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
+        padding: '20px 12px',
+        overflowY: 'auto',
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          background: theme.card,
+          border: `1px solid ${theme.border}`,
+          borderRadius: 16,
+          padding: 20,
+          width: '100%',
+          maxWidth: 560,
+          boxShadow: '0 8px 40px rgba(0,0,0,0.4)',
+          marginTop: 8,
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <span style={{ fontSize: 16, fontWeight: 700, color: theme.textPrimary }}>Generate AI proposals</span>
+          <button
+            onClick={onClose}
+            style={{ background: 'transparent', border: 'none', color: theme.textMuted, cursor: 'pointer', padding: 4 }}
+          >
+            <CloseIcon size={18} />
+          </button>
+        </div>
+
+        <p style={{ fontSize: 13, color: theme.textSecondary, marginBottom: 14, lineHeight: 1.6 }}>
+          Run the command below in your terminal. Claude will analyze your current simulation and return 3 optimized proposals as JSON. Paste the JSON output in the box below.
+        </p>
+
+        {/* Command block */}
+        <div style={{
+          background: theme.bg,
+          border: `1px solid ${theme.border}`,
+          borderRadius: 10,
+          overflow: 'hidden',
+          marginBottom: 14,
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', borderBottom: `1px solid ${theme.border}` }}>
+            <span style={{ fontSize: 11, color: theme.textMuted, fontFamily: 'monospace' }}>Terminal command</span>
+            <button
+              onClick={copyCmd}
+              style={{
+                background: cmdCopied ? `${theme.green}22` : `${theme.blue}22`,
+                border: `1px solid ${cmdCopied ? theme.green : theme.blue}66`,
+                color: cmdCopied ? theme.green : theme.blue,
+                borderRadius: 6, padding: '4px 10px', fontSize: 11, fontWeight: 600,
+                cursor: 'pointer', fontFamily: 'inherit',
+              }}
+            >
+              {cmdCopied ? 'Copied!' : 'Copy command'}
+            </button>
+          </div>
+          <pre style={{
+            fontFamily: '"SF Mono", "Fira Code", monospace',
+            fontSize: 11,
+            color: theme.textSecondary,
+            padding: '10px 12px',
+            margin: 0,
+            overflowX: 'auto',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-all',
+            maxHeight: 160,
+            overflowY: 'auto',
+            lineHeight: 1.5,
+            userSelect: 'text',
+          }}>
+            {command}
+          </pre>
+        </div>
+
+        {/* Paste JSON */}
+        <div style={{ marginBottom: 14 }}>
+          <label style={{ fontSize: 12, color: theme.textSecondary, display: 'block', marginBottom: 6 }}>
+            Paste Claude&apos;s JSON output here
+          </label>
+          <textarea
+            value={pasteJson}
+            onChange={e => { setPasteJson(e.target.value); setParseError(null) }}
+            placeholder={'[\n  {\n    "id": "prop-1",\n    "title": "...",\n    ...\n  }\n]'}
+            style={{
+              width: '100%',
+              minHeight: 120,
+              background: theme.bg,
+              border: `1px solid ${parseError ? theme.red : theme.border}`,
+              borderRadius: 8,
+              color: theme.textPrimary,
+              padding: '10px 12px',
+              fontSize: 12,
+              fontFamily: '"SF Mono", "Fira Code", monospace',
+              resize: 'vertical',
+              outline: 'none',
+              boxSizing: 'border-box',
+            }}
+          />
+          {parseError && (
+            <div style={{ fontSize: 11, color: theme.red, marginTop: 4 }}>{parseError}</div>
+          )}
+        </div>
+
+        <div style={{ display: 'flex', gap: 10 }}>
+          <button
+            onClick={loadProposals}
+            disabled={!pasteJson.trim()}
+            style={{
+              flex: 1,
+              background: pasteJson.trim() ? theme.blue : theme.border,
+              color: pasteJson.trim() ? '#fff' : theme.textMuted,
+              border: 'none', borderRadius: 8,
+              padding: '11px', fontSize: 14, fontWeight: 700,
+              cursor: pasteJson.trim() ? 'pointer' : 'default',
+              fontFamily: 'inherit',
+            }}
+          >
+            Load proposals
+          </button>
+          <button
+            onClick={onClose}
+            style={{
+              flex: 1,
+              background: theme.border,
+              color: theme.textSecondary,
+              border: 'none', borderRadius: 8,
+              padding: '11px', fontSize: 14,
+              cursor: 'pointer', fontFamily: 'inherit',
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function AiTab({
+  allSimulations,
+  sliders,
+  settings,
+  customBills,
+  hiddenBillIds,
+  balanceOverrides,
+  allWeekendStates,
+  todayKey,
+  theme,
+}: {
+  allSimulations: { month: MonthOption; days: DayData[]; endPot: number; ringFenceAccumulated: number }[]
+  sliders: Sliders
+  settings: Settings
+  customBills: CustomBill[]
+  hiddenBillIds: Set<string>
+  balanceOverrides: Record<string, number>
+  allWeekendStates: Record<string, WeekendState>
+  todayKey: string
+  theme: ThemeTokens
+}) {
+  const [proposals, setProposals] = useState<AiProposal[]>([])
+  const [hydratedProposals, setHydratedProposals] = useState(false)
+  const [viewingProposal, setViewingProposal] = useState<AiProposal | null>(null)
+  const [generateOpen, setGenerateOpen] = useState(false)
+
+  // Load proposals from localStorage
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('fin-ai-proposals')
+      if (raw) {
+        const parsed = JSON.parse(raw) as AiProposal[]
+        setProposals(parsed)
+      }
+    } catch { /* ignore */ }
+    setHydratedProposals(true)
+  }, [])
+
+  // Persist proposals
+  useEffect(() => {
+    if (!hydratedProposals) return
+    localStorage.setItem('fin-ai-proposals', JSON.stringify(proposals))
+  }, [proposals, hydratedProposals])
+
+  function addProposals(incoming: AiProposal[]) {
+    setProposals(prev => {
+      const existing = new Set(prev.map(p => p.id))
+      const newOnes = incoming.filter(p => !existing.has(p.id)).map(p => ({ ...p, createdAt: new Date().toISOString() }))
+      return [...prev, ...newOnes]
+    })
+  }
+
+  function deleteProposal(id: string) {
+    setProposals(prev => prev.filter(p => p.id !== id))
+  }
+
+  const dump = buildDataDump(allSimulations, sliders, settings, customBills, hiddenBillIds, todayKey)
+
+  // Compute current red day count for comparison
+  const currentRedDays = allSimulations.reduce((sum, sim) => sum + sim.days.filter(d => d.isPotNegative).length, 0)
+  const currentEndPots = allSimulations.filter(s => MONTHS.some(m => m.month === s.month.month && m.year === s.month.year)).map(s => s.endPot)
+
+  return (
+    <div style={{ padding: '12px 12px 32px', maxWidth: 600, margin: '0 auto' }}>
+      {/* Viewing a proposal */}
+      {viewingProposal && (
+        <ProposalSimView
+          proposal={viewingProposal}
+          settings={settings}
+          customBills={customBills}
+          hiddenBillIds={hiddenBillIds}
+          balanceOverrides={balanceOverrides}
+          allWeekendStates={allWeekendStates}
+          theme={theme}
+          onClose={() => setViewingProposal(null)}
+        />
+      )}
+
+      {/* Generate modal */}
+      {generateOpen && (
+        <GenerateModal
+          dump={dump}
+          onClose={() => setGenerateOpen(false)}
+          onLoad={addProposals}
+          theme={theme}
+        />
+      )}
+
+      {/* Data panel */}
+      <div style={{ marginBottom: 4 }}>
+        <h2 style={{ fontSize: 16, fontWeight: 800, color: theme.textPrimary, margin: '0 0 10px' }}>
+          Simulation data
+        </h2>
+        <AiDataPanel
+          allSimulations={allSimulations}
+          sliders={sliders}
+          settings={settings}
+          customBills={customBills}
+          hiddenBillIds={hiddenBillIds}
+          todayKey={todayKey}
+          theme={theme}
+        />
+      </div>
+
+      {/* Proposals section */}
+      <div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+          <h2 style={{ fontSize: 16, fontWeight: 800, color: theme.textPrimary, margin: 0 }}>
+            AI proposals
+          </h2>
+          <button
+            onClick={() => setGenerateOpen(true)}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              background: `${theme.purple}22`,
+              border: `1px solid ${theme.purple}66`,
+              color: theme.purple,
+              borderRadius: 8, padding: '8px 14px', fontSize: 13, fontWeight: 700,
+              cursor: 'pointer', fontFamily: 'inherit',
+            }}
+          >
+            <span style={{ fontSize: 15 }}>&#9733;</span>
+            Generate proposals
+          </button>
+        </div>
+
+        {proposals.length === 0 ? (
+          <div style={{
+            background: theme.card,
+            border: `1px solid ${theme.border}`,
+            borderRadius: 12,
+            padding: '32px 20px',
+            textAlign: 'center',
+          }}>
+            <div style={{ fontSize: 28, marginBottom: 10, opacity: 0.4 }}>&#9881;</div>
+            <div style={{ fontSize: 14, color: theme.textMuted, marginBottom: 4 }}>No proposals yet.</div>
+            <div style={{ fontSize: 12, color: theme.textMuted }}>Use the Generate button to create one.</div>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {proposals.map(p => {
+              const endPotDelta = p.endPots.length > 0
+                ? p.endPots[p.endPots.length - 1] - (currentEndPots[currentEndPots.length - 1] ?? 0)
+                : null
+              const redDelta = currentRedDays - p.redDayCount
+
+              return (
+                <div
+                  key={p.id}
+                  style={{
+                    background: theme.card,
+                    border: `1px solid ${theme.border}`,
+                    borderRadius: 12,
+                    padding: '14px 16px',
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 6 }}>
+                    <div>
+                      <div style={{ fontSize: 14, fontWeight: 700, color: theme.textPrimary, marginBottom: 2 }}>{p.title}</div>
+                      <div style={{ fontSize: 12, color: theme.textSecondary, lineHeight: 1.5 }}>{p.description}</div>
+                    </div>
+                    <button
+                      onClick={() => deleteProposal(p.id)}
+                      style={{
+                        background: 'transparent', border: 'none',
+                        color: theme.textMuted, cursor: 'pointer',
+                        fontSize: 18, lineHeight: 1, padding: '0 2px', flexShrink: 0,
+                        fontFamily: 'inherit',
+                      }}
+                      title="Delete proposal"
+                    >
+                      &times;
+                    </button>
+                  </div>
+
+                  {/* Stats */}
+                  <div style={{ display: 'flex', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
+                    {endPotDelta !== null && (
+                      <span style={{ fontSize: 12, color: endPotDelta >= 0 ? theme.green : theme.red, fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
+                        End pot: {endPotDelta >= 0 ? '+' : ''}{Math.round(endPotDelta)}
+                      </span>
+                    )}
+                    <span style={{ fontSize: 12, color: redDelta > 0 ? theme.green : redDelta < 0 ? theme.red : theme.textMuted, fontWeight: 600 }}>
+                      Red days: {redDelta > 0 ? `-${redDelta}` : redDelta < 0 ? `+${Math.abs(redDelta)}` : 'same'}
+                    </span>
+                    {p.totalSavings > 0 && (
+                      <span style={{ fontSize: 12, color: theme.purple, fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
+                        Savings: +£{p.totalSavings}
+                      </span>
+                    )}
+                  </div>
+
+                  <button
+                    onClick={() => setViewingProposal(p)}
+                    style={{
+                      width: '100%',
+                      background: `${theme.blue}18`,
+                      border: `1px solid ${theme.blue}44`,
+                      color: theme.blue,
+                      borderRadius: 8, padding: '9px',
+                      fontSize: 13, fontWeight: 700,
+                      cursor: 'pointer', fontFamily: 'inherit',
+                    }}
+                  >
+                    View simulation
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ─── Main Component ─────────────────────────────────────────────
 
 const DEFAULT_WEEKEND_STATE: WeekendState = { workedDays: [], weekendRate: 80, weekendBillsPerDay: 20, weekendSavings: 10 }
@@ -2555,6 +3392,7 @@ export default function FinanceSimulator() {
   const [weekendsOpen, setWeekendsOpen] = useState(false)
   const [billsMode, setBillsMode] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [aiMode, setAiMode] = useState(false)
   const [activeDragId, setActiveDragId] = useState<string | null>(null)
   const [overDayId, setOverDayId] = useState<string | null>(null)
 
@@ -3058,7 +3896,7 @@ export default function FinanceSimulator() {
         />
       )}
 
-      {/* Sticky header: Month tabs + gear */}
+      {/* Sticky header: Month tabs + gear + AI */}
       <div style={{
         position: 'sticky', top: 0, zIndex: 50,
         background: settings.darkMode ? 'rgba(8,13,20,0.96)' : 'rgba(248,250,252,0.96)',
@@ -3070,6 +3908,9 @@ export default function FinanceSimulator() {
             display: 'flex', overflowX: 'auto', flex: 1,
             scrollbarWidth: 'none',
             WebkitOverflowScrolling: 'touch',
+            opacity: aiMode ? 0.4 : 1,
+            pointerEvents: aiMode ? 'none' : 'auto',
+            transition: 'opacity 0.2s',
           }}>
             {visibleMonths.map((m) => {
               const i = ALL_MONTHS.indexOf(m)
@@ -3108,16 +3949,53 @@ export default function FinanceSimulator() {
             onClick={() => setSettingsOpen(true)}
             style={{
               flexShrink: 0, background: 'transparent', border: 'none',
-              color: theme.textMuted, cursor: 'pointer', padding: '12px 10px',
+              color: aiMode ? theme.textMuted : theme.textMuted,
+              cursor: 'pointer', padding: '12px 8px',
+              opacity: aiMode ? 0.4 : 1,
             }}
           >
             <GearIcon size={20} />
           </button>
+          <button
+            onClick={() => setAiMode(m => !m)}
+            style={{
+              flexShrink: 0,
+              background: aiMode ? `${theme.purple}22` : 'transparent',
+              border: aiMode ? `1px solid ${theme.purple}66` : `1px solid ${theme.border}`,
+              color: aiMode ? theme.purple : theme.textMuted,
+              borderRadius: 7,
+              padding: '5px 10px',
+              fontSize: 12,
+              fontWeight: 700,
+              cursor: 'pointer',
+              fontFamily: 'inherit',
+              margin: '0 4px',
+              minHeight: 30,
+              letterSpacing: '0.02em',
+            }}
+          >
+            {aiMode ? '← Sim' : 'AI'}
+          </button>
         </div>
       </div>
 
+      {/* AI Tab */}
+      {aiMode && (
+        <AiTab
+          allSimulations={allSimulations}
+          sliders={sliders}
+          settings={settings}
+          customBills={customBills}
+          hiddenBillIds={hiddenBillIds}
+          balanceOverrides={balanceOverrides}
+          allWeekendStates={allWeekendStates}
+          todayKey={todayKey}
+          theme={theme}
+        />
+      )}
+
       {/* Main content */}
-      <div style={{ padding: '12px 12px 32px', maxWidth: 600, margin: '0 auto' }}>
+      <div style={{ padding: '12px 12px 32px', maxWidth: 600, margin: '0 auto', display: aiMode ? 'none' : 'block' }}>
 
         {/* Month heading */}
         <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>

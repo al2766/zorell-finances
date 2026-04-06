@@ -501,7 +501,14 @@ export default function AddBillModal({ onClose, onSave, existingBill, dark = fal
               <input
                 type="number"
                 value={amount || ''}
-                onChange={e => setAmount(Number(e.target.value))}
+                onChange={e => {
+                  const v = parseFloat(e.target.value)
+                  setAmount(isNaN(v) ? 0 : Math.round(v * 100) / 100)
+                }}
+                onBlur={e => {
+                  const v = parseFloat(e.target.value)
+                  setAmount(isNaN(v) ? 0 : Math.round(Math.abs(v) * 100) / 100)
+                }}
                 placeholder="0.00"
                 step="0.01"
                 min="0"
