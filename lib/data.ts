@@ -11,6 +11,25 @@ export interface Bill {
   moveable: boolean
 }
 
+export interface CustomBill {
+  id: string
+  name: string
+  amount: number
+  frequency: 'monthly' | 'weekly' | 'one-off'
+  category: 'subscription' | 'utility' | 'debt' | 'housing' | 'personal'
+  // monthly
+  dayOfMonth?: number
+  startsMonth?: number
+  startsYear?: number
+  endsMonth?: number | null
+  endsYear?: number | null
+  // weekly
+  weekDays?: number[]  // 0=Sun, 1=Mon ... 6=Sat
+  // one-off
+  dates?: string[]     // 'YYYY-MM-DD'
+  hidden?: boolean
+}
+
 export interface Holiday {
   name: string
   startDate: string
@@ -23,28 +42,28 @@ export const BILLS: Bill[] = [
   { id: 'apple-storage', name: 'Apple storage', day: 1, amount: 8.99, category: 'subscription', endsMonth: null, endsYear: null, moveable: true },
   { id: 'wifi', name: 'WiFi', day: 2, amount: 24.00, category: 'utility', endsMonth: null, endsYear: null, moveable: true },
   { id: 'cat-lenses', name: 'Catarina lenses', day: 3, amount: 23.00, category: 'personal', endsMonth: null, endsYear: null, moveable: true },
-  { id: 'klarna-new', name: 'Klarna', day: 3, amount: 11.55, category: 'debt', endsMonth: 6, endsYear: 2026, moveable: false },
+  { id: 'klarna-new', name: 'Klarna', day: 3, amount: 11.55, category: 'debt', endsMonth: 6, endsYear: 2026, moveable: true },
   { id: 'cat-apple', name: 'Catarina Apple', day: 5, amount: 5.99, category: 'personal', endsMonth: null, endsYear: null, moveable: true },
   { id: 'channel4', name: 'Channel 4', day: 5, amount: 3.99, category: 'subscription', startsMonth: 5, startsYear: 2026, endsMonth: null, endsYear: null, moveable: true },
   { id: 'amazon-prime', name: 'Amazon Prime', day: 6, amount: 8.99, category: 'subscription', endsMonth: null, endsYear: null, moveable: true },
-  { id: 'rent', name: 'Rent', day: 8, amount: 407.56, category: 'housing', endsMonth: null, endsYear: null, moveable: false },
+  { id: 'rent', name: 'Rent', day: 8, amount: 407.56, category: 'housing', endsMonth: null, endsYear: null, moveable: true },
   { id: 'ionos', name: 'Ionos', day: 8, amount: 7.50, category: 'subscription', endsMonth: null, endsYear: null, moveable: true },
   { id: 'chatgpt', name: 'ChatGPT', day: 9, amount: 20.00, category: 'subscription', endsMonth: null, endsYear: null, moveable: true },
-  { id: 'lowell', name: 'Lowell', day: 9, amount: 10.00, category: 'debt', endsMonth: null, endsYear: null, moveable: false },
-  { id: 'pra-monzo', name: 'Pra Monzo', day: 9, amount: 15.00, category: 'debt', endsMonth: null, endsYear: null, moveable: false },
-  { id: 'jaja', name: 'Jaja', day: 10, amount: 391.00, category: 'debt', endsMonth: 7, endsYear: 2026, moveable: false },
-  { id: 'ao-plan-1', name: 'AO Plan 1', day: 10, amount: 51.50, category: 'debt', endsMonth: 6, endsYear: 2026, moveable: false },
-  { id: 'ao-plan-2', name: 'AO Plan 2', day: 10, amount: 21.59, category: 'debt', endsMonth: 11, endsYear: 2026, moveable: false },
-  { id: 'ao-plan-3', name: 'AO Plan 3', day: 10, amount: 45.67, category: 'debt', endsMonth: 5, endsYear: 2026, moveable: false },
-  { id: 'ao-plan-4', name: 'AO Plan 4', day: 10, amount: 78.59, category: 'debt', endsMonth: 8, endsYear: 2026, moveable: false },
-  { id: 'sofa-novuna', name: 'Sofa/Novuna', day: 10, amount: 76.50, category: 'debt', endsMonth: 11, endsYear: 2027, moveable: false },
+  { id: 'lowell', name: 'Lowell', day: 9, amount: 10.00, category: 'debt', endsMonth: null, endsYear: null, moveable: true },
+  { id: 'pra-monzo', name: 'Pra Monzo', day: 9, amount: 15.00, category: 'debt', endsMonth: null, endsYear: null, moveable: true },
+  { id: 'jaja', name: 'Jaja', day: 10, amount: 391.00, category: 'debt', endsMonth: 7, endsYear: 2026, moveable: true },
+  { id: 'ao-plan-1', name: 'AO Plan 1', day: 10, amount: 51.50, category: 'debt', endsMonth: 6, endsYear: 2026, moveable: true },
+  { id: 'ao-plan-2', name: 'AO Plan 2', day: 10, amount: 21.59, category: 'debt', endsMonth: 11, endsYear: 2026, moveable: true },
+  { id: 'ao-plan-3', name: 'AO Plan 3', day: 10, amount: 45.67, category: 'debt', endsMonth: 5, endsYear: 2026, moveable: true },
+  { id: 'ao-plan-4', name: 'AO Plan 4', day: 10, amount: 78.59, category: 'debt', endsMonth: 8, endsYear: 2026, moveable: true },
+  { id: 'sofa-novuna', name: 'Sofa/Novuna', day: 10, amount: 76.50, category: 'debt', endsMonth: 11, endsYear: 2027, moveable: true },
   { id: 'my-phone', name: 'My phone', day: 10, amount: 15.00, category: 'personal', endsMonth: null, endsYear: null, moveable: true },
   { id: 'kindle', name: 'Kindle', day: 13, amount: 9.49, category: 'subscription', endsMonth: null, endsYear: null, moveable: true },
-  { id: 'council-tax', name: 'Council tax', day: 16, amount: 70.28, category: 'housing', endsMonth: null, endsYear: null, moveable: false },
+  { id: 'council-tax', name: 'Council tax', day: 16, amount: 70.28, category: 'housing', endsMonth: null, endsYear: null, moveable: true },
   { id: 'cat-mobile', name: 'Cat mobile', day: 20, amount: 12.00, category: 'personal', endsMonth: null, endsYear: null, moveable: true },
   { id: 'electric', name: 'Electric', day: 21, amount: 34.00, category: 'utility', endsMonth: null, endsYear: null, moveable: true },
-  { id: 'water', name: 'Water', day: 26, amount: 24.46, category: 'utility', endsMonth: null, endsYear: null, moveable: false },
-  { id: 'gas', name: 'Gas', day: 27, amount: 65.98, category: 'utility', endsMonth: null, endsYear: null, moveable: false },
+  { id: 'water', name: 'Water', day: 26, amount: 24.46, category: 'utility', endsMonth: null, endsYear: null, moveable: true },
+  { id: 'gas', name: 'Gas', day: 27, amount: 65.98, category: 'utility', endsMonth: null, endsYear: null, moveable: true },
   { id: 'claude', name: 'Claude', day: 28, amount: 18.00, category: 'subscription', endsMonth: null, endsYear: null, moveable: true },
 ]
 

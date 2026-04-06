@@ -1,10 +1,9 @@
 import type { Metadata, Viewport } from 'next'
 import './globals.css'
-import BottomNav from '@/components/BottomNav'
 
 export const metadata: Metadata = {
   title: 'Finances',
-  description: 'Personal financial planning dashboard',
+  description: 'Personal financial planning — bills, simulate, scenarios',
 }
 
 export const viewport: Viewport = {
@@ -22,9 +21,8 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body>
-        <div className="app-container">
+        <div className="app-shell">
           {children}
-          <BottomNav />
         </div>
       </body>
     </html>

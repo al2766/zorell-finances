@@ -1,5 +1,5 @@
-import { redirect } from 'next/navigation'
+import FinanceSimulator from '@/components/FinanceSimulator'
 
-export default function Home() {
-  redirect('/overview')
+export default function Page() {
+  return <FinanceSimulator />
 }
