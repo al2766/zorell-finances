@@ -12,7 +12,7 @@ import {
   type DragStartEvent,
 } from '@dnd-kit/core'
 import { useDroppable, useDraggable } from '@dnd-kit/core'
-import { BILLS, HOLIDAYS, AFJ_FULL_TERM_DAYS, MONTH_SHORT } from '@/lib/data'
+import { BILLS, SEED_CUSTOM_BILLS, HOLIDAYS, AFJ_FULL_TERM_DAYS, MONTH_SHORT } from '@/lib/data'
 import type { Bill, CustomBill } from '@/lib/data'
 import AddBillModal from '@/components/AddBillModal'
 
@@ -2010,10 +2010,23 @@ export default function FinanceSimulator() {
       }
       setAllWeekendStates(wkdStates)
 
-      // Load custom bills
+      // Load custom bills — seed with all bills on first load if nothing stored
       const cbRaw = localStorage.getItem('fin-custom-bills')
       if (cbRaw) {
-        try { setCustomBills(JSON.parse(cbRaw)) } catch { /* ignore */ }
+        try {
+          const parsed = JSON.parse(cbRaw) as CustomBill[]
+          // If stored list is empty (legacy state before migration), re-seed
+          if (parsed.length === 0) {
+            setCustomBills(SEED_CUSTOM_BILLS)
+            localStorage.setItem('fin-custom-bills', JSON.stringify(SEED_CUSTOM_BILLS))
+          } else {
+            setCustomBills(parsed)
+          }
+        } catch { /* ignore */ }
+      } else {
+        // First ever load — seed all bills
+        setCustomBills(SEED_CUSTOM_BILLS)
+        localStorage.setItem('fin-custom-bills', JSON.stringify(SEED_CUSTOM_BILLS))
       }
 
       // Load hidden bill IDs

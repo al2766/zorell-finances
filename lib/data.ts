@@ -38,33 +38,36 @@ export interface Holiday {
   afjLost: number
 }
 
-export const BILLS: Bill[] = [
-  { id: 'apple-storage', name: 'Apple storage', day: 1, amount: 8.99, category: 'subscription', endsMonth: null, endsYear: null, moveable: true },
-  { id: 'wifi', name: 'WiFi', day: 2, amount: 24.00, category: 'utility', endsMonth: null, endsYear: null, moveable: true },
-  { id: 'cat-lenses', name: 'Catarina lenses', day: 3, amount: 23.00, category: 'personal', endsMonth: null, endsYear: null, moveable: true },
-  { id: 'klarna-new', name: 'Klarna', day: 3, amount: 11.55, category: 'debt', endsMonth: 6, endsYear: 2026, moveable: true },
-  { id: 'cat-apple', name: 'Catarina Apple', day: 5, amount: 5.99, category: 'personal', endsMonth: null, endsYear: null, moveable: true },
-  { id: 'channel4', name: 'Channel 4', day: 5, amount: 3.99, category: 'subscription', startsMonth: 5, startsYear: 2026, endsMonth: null, endsYear: null, moveable: true },
-  { id: 'amazon-prime', name: 'Amazon Prime', day: 6, amount: 8.99, category: 'subscription', endsMonth: null, endsYear: null, moveable: true },
-  { id: 'rent', name: 'Rent', day: 8, amount: 407.56, category: 'housing', endsMonth: null, endsYear: null, moveable: true },
-  { id: 'ionos', name: 'Ionos', day: 8, amount: 7.50, category: 'subscription', endsMonth: null, endsYear: null, moveable: true },
-  { id: 'chatgpt', name: 'ChatGPT', day: 9, amount: 20.00, category: 'subscription', endsMonth: null, endsYear: null, moveable: true },
-  { id: 'lowell', name: 'Lowell', day: 9, amount: 10.00, category: 'debt', endsMonth: null, endsYear: null, moveable: true },
-  { id: 'pra-monzo', name: 'Pra Monzo', day: 9, amount: 15.00, category: 'debt', endsMonth: null, endsYear: null, moveable: true },
-  { id: 'jaja', name: 'Jaja', day: 10, amount: 391.00, category: 'debt', endsMonth: 7, endsYear: 2026, moveable: true },
-  { id: 'ao-plan-1', name: 'AO Plan 1', day: 10, amount: 51.50, category: 'debt', endsMonth: 6, endsYear: 2026, moveable: true },
-  { id: 'ao-plan-2', name: 'AO Plan 2', day: 10, amount: 21.59, category: 'debt', endsMonth: 11, endsYear: 2026, moveable: true },
-  { id: 'ao-plan-3', name: 'AO Plan 3', day: 10, amount: 45.67, category: 'debt', endsMonth: 5, endsYear: 2026, moveable: true },
-  { id: 'ao-plan-4', name: 'AO Plan 4', day: 10, amount: 78.59, category: 'debt', endsMonth: 8, endsYear: 2026, moveable: true },
-  { id: 'sofa-novuna', name: 'Sofa/Novuna', day: 10, amount: 76.50, category: 'debt', endsMonth: 11, endsYear: 2027, moveable: true },
-  { id: 'my-phone', name: 'My phone', day: 10, amount: 15.00, category: 'personal', endsMonth: null, endsYear: null, moveable: true },
-  { id: 'kindle', name: 'Kindle', day: 13, amount: 9.49, category: 'subscription', endsMonth: null, endsYear: null, moveable: true },
-  { id: 'council-tax', name: 'Council tax', day: 16, amount: 70.28, category: 'housing', endsMonth: null, endsYear: null, moveable: true },
-  { id: 'cat-mobile', name: 'Cat mobile', day: 20, amount: 12.00, category: 'personal', endsMonth: null, endsYear: null, moveable: true },
-  { id: 'electric', name: 'Electric', day: 21, amount: 34.00, category: 'utility', endsMonth: null, endsYear: null, moveable: true },
-  { id: 'water', name: 'Water', day: 26, amount: 24.46, category: 'utility', endsMonth: null, endsYear: null, moveable: true },
-  { id: 'gas', name: 'Gas', day: 27, amount: 65.98, category: 'utility', endsMonth: null, endsYear: null, moveable: true },
-  { id: 'claude', name: 'Claude', day: 28, amount: 18.00, category: 'subscription', endsMonth: null, endsYear: null, moveable: true },
+// Static BILLS kept empty — all bills are now managed as CustomBill in localStorage (seeded from SEED_CUSTOM_BILLS on first load)
+export const BILLS: Bill[] = []
+
+export const SEED_CUSTOM_BILLS: CustomBill[] = [
+  { id: 'apple-storage', name: 'Apple storage',   frequency: 'monthly', dayOfMonth: 1,  amount: 8.99,   category: 'subscription' },
+  { id: 'wifi',          name: 'WiFi',             frequency: 'monthly', dayOfMonth: 2,  amount: 24.00,  category: 'utility' },
+  { id: 'cat-lenses',    name: 'Catarina lenses',  frequency: 'monthly', dayOfMonth: 3,  amount: 23.00,  category: 'personal' },
+  { id: 'klarna-new',    name: 'Klarna',            frequency: 'monthly', dayOfMonth: 3,  amount: 11.55,  category: 'debt',         endsMonth: 6,  endsYear: 2026 },
+  { id: 'cat-apple',     name: 'Catarina Apple',   frequency: 'monthly', dayOfMonth: 5,  amount: 5.99,   category: 'personal' },
+  { id: 'channel4',      name: 'Channel 4',         frequency: 'monthly', dayOfMonth: 5,  amount: 3.99,   category: 'subscription', startsMonth: 5, startsYear: 2026 },
+  { id: 'amazon-prime',  name: 'Amazon Prime',      frequency: 'monthly', dayOfMonth: 6,  amount: 8.99,   category: 'subscription' },
+  { id: 'rent',          name: 'Rent',              frequency: 'monthly', dayOfMonth: 8,  amount: 407.56, category: 'housing' },
+  { id: 'ionos',         name: 'Ionos',             frequency: 'monthly', dayOfMonth: 8,  amount: 7.50,   category: 'subscription' },
+  { id: 'chatgpt',       name: 'ChatGPT',           frequency: 'monthly', dayOfMonth: 9,  amount: 20.00,  category: 'subscription' },
+  { id: 'lowell',        name: 'Lowell',            frequency: 'monthly', dayOfMonth: 9,  amount: 10.00,  category: 'debt' },
+  { id: 'pra-monzo',     name: 'Pra Monzo',         frequency: 'monthly', dayOfMonth: 9,  amount: 15.00,  category: 'debt' },
+  { id: 'jaja',          name: 'Jaja',              frequency: 'monthly', dayOfMonth: 10, amount: 391.00, category: 'debt',         endsMonth: 7,  endsYear: 2026 },
+  { id: 'ao-plan-1',     name: 'AO Plan 1',         frequency: 'monthly', dayOfMonth: 10, amount: 51.50,  category: 'debt',         endsMonth: 6,  endsYear: 2026 },
+  { id: 'ao-plan-2',     name: 'AO Plan 2',         frequency: 'monthly', dayOfMonth: 10, amount: 21.59,  category: 'debt',         endsMonth: 11, endsYear: 2026 },
+  { id: 'ao-plan-3',     name: 'AO Plan 3',         frequency: 'monthly', dayOfMonth: 10, amount: 45.67,  category: 'debt',         endsMonth: 5,  endsYear: 2026 },
+  { id: 'ao-plan-4',     name: 'AO Plan 4',         frequency: 'monthly', dayOfMonth: 10, amount: 78.59,  category: 'debt',         endsMonth: 8,  endsYear: 2026 },
+  { id: 'sofa-novuna',   name: 'Sofa/Novuna',       frequency: 'monthly', dayOfMonth: 10, amount: 76.50,  category: 'debt',         endsMonth: 11, endsYear: 2027 },
+  { id: 'my-phone',      name: 'My phone',          frequency: 'monthly', dayOfMonth: 10, amount: 15.00,  category: 'personal' },
+  { id: 'kindle',        name: 'Kindle',            frequency: 'monthly', dayOfMonth: 13, amount: 9.49,   category: 'subscription' },
+  { id: 'council-tax',   name: 'Council tax',       frequency: 'monthly', dayOfMonth: 16, amount: 70.28,  category: 'housing' },
+  { id: 'cat-mobile',    name: 'Cat mobile',        frequency: 'monthly', dayOfMonth: 20, amount: 12.00,  category: 'personal' },
+  { id: 'electric',      name: 'Electric',          frequency: 'monthly', dayOfMonth: 21, amount: 34.00,  category: 'utility' },
+  { id: 'water',         name: 'Water',             frequency: 'monthly', dayOfMonth: 26, amount: 24.46,  category: 'utility' },
+  { id: 'gas',           name: 'Gas',               frequency: 'monthly', dayOfMonth: 27, amount: 65.98,  category: 'utility' },
+  { id: 'claude',        name: 'Claude',            frequency: 'monthly', dayOfMonth: 28, amount: 18.00,  category: 'subscription' },
 ]
 
 export const HOLIDAYS: Holiday[] = [
