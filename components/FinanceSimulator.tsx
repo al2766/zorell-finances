@@ -596,6 +596,16 @@ function simulateCycle(
   let cumulativeSpending = 0
   const days: DayData[] = []
 
+  // Track previous day's state for timing-correct pot contribution
+  let prevIsRestDay = true
+  let prevIsWorkedWeekend = false
+  let prevIsSchoolHoliday = false
+  let prevBaseIncome = 0
+  let prevExtraIncome = 0
+  let prevIsPayday = false
+  let prevAfjIn = 0
+  let prevCarryIn = 0
+
   for (let i = 0; i < cycleDays.length; i++) {
     const date = cycleDays[i]
     const dom = date.getDate()
@@ -653,10 +663,21 @@ function simulateCycle(
 
     const _weekendBillsPerDay = weekendBillsPerDay ?? billsPerDay
     const _weekendSavings = weekendSavings ?? savingsOnExtra
-    if (!isRestDay) {
-      const todayBillsAdd = isWorkedWeekend ? _weekendBillsPerDay : billsPerDay
-      billsPot += todayBillsAdd
+
+    // Timing-corrected pot contribution: use yesterday's income rate
+    // (money earned yesterday is transferred into the bills account today)
+    if (i === 0) {
+      // First day of cycle: use today (payday — AFJ arrives today anyway)
+      if (!isRestDay) {
+        billsPot += isWorkedWeekend ? _weekendBillsPerDay : billsPerDay
+      }
+    } else {
+      // Use yesterday's type to determine today's pot contribution
+      if (!prevIsRestDay) {
+        billsPot += prevIsWorkedWeekend ? _weekendBillsPerDay : billsPerDay
+      }
     }
+
     billsPot -= billsDueAmt
     billsPot -= carCost
     billsPot -= fuelCost
@@ -673,37 +694,47 @@ function simulateCycle(
     let spendingToday: number
     let splitToday: number
 
-    if (isSchoolHolidayWeekday) {
-      savingsToday = 0
-      splitToday = offDaySplit
-      spendingToday = offDayRate - billsPerDay - offDaySplit - fuelCost
-      ringFenceAccumulated += offDaySplit
-    } else if (isRestDay) {
+    // Universal savings/spending formula for all day types
+    // Source income: yesterday's earnings (timing-corrected); day 0 uses today
+    const srcBaseIncome = i === 0 ? baseIncome : prevBaseIncome
+    const srcExtraIncome = i === 0 ? extraIncomeTotal : prevExtraIncome
+    const srcIsWorkedWeekend = i === 0 ? isWorkedWeekend : prevIsWorkedWeekend
+    const srcIsSchoolHoliday = i === 0 ? isSchoolHolidayWeekday : prevIsSchoolHoliday
+    const srcIsRestDay = i === 0 ? isRestDay : prevIsRestDay
+    const srcBpd = srcIsRestDay ? 0 : (srcIsWorkedWeekend ? _weekendBillsPerDay : billsPerDay)
+
+    if (srcIsRestDay) {
       savingsToday = 0
       splitToday = 0
       spendingToday = 0
-    } else if (isWorkedWeekend) {
-      splitToday = 0
-      const extra = baseIncome + extraIncomeTotal - _weekendBillsPerDay - carCost - fuelCost
-      if (extra > 0) {
-        savingsToday = Math.min(_weekendSavings, extra)
-      } else {
-        savingsToday = 0
-      }
-      spendingToday = extra - savingsToday
     } else {
-      splitToday = 0
-      const extra = baseIncome + extraIncomeTotal - billsPerDay - carCost - fuelCost
-      if (extra > 0) {
-        savingsToday = Math.min(savingsOnExtra, extra)
+      let available = srcBaseIncome + srcExtraIncome - srcBpd
+
+      if (srcIsSchoolHoliday) {
+        splitToday = offDaySplit
+        ringFenceAccumulated += offDaySplit
+        available -= offDaySplit
       } else {
-        savingsToday = 0
+        splitToday = 0
       }
-      spendingToday = extra - savingsToday
+
+      const savingsMax = srcIsWorkedWeekend ? _weekendSavings : savingsOnExtra
+      savingsToday = Math.min(savingsMax, Math.max(0, available))
+      spendingToday = Math.max(0, available - savingsToday)
     }
 
     cumulativeSavings += savingsToday
     cumulativeSpending += spendingToday
+
+    // Store current day state for next iteration's look-back
+    prevIsRestDay = isRestDay
+    prevIsWorkedWeekend = isWorkedWeekend
+    prevIsSchoolHoliday = isSchoolHolidayWeekday
+    prevBaseIncome = baseIncome
+    prevExtraIncome = extraIncomeTotal
+    prevIsPayday = isPayday
+    prevAfjIn = afjIn
+    prevCarryIn = carryInToday
 
     const billDetailsArr: { name: string; amount: number }[] = [
       ...billsToday.map(b => ({ name: b.name, amount: b.amount })),
@@ -1339,6 +1370,9 @@ function DayCard({
     }
   }
 
+  const savingsColor = '#ea580c'   // orange
+  const spendingColor = theme.purple
+
   return (
     <div
       onClick={() => setExpanded(e => !e)}
@@ -1361,186 +1395,127 @@ function DayCard({
       }}
     >
       {/* Main row */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         {/* Date */}
-        <div style={{ width: 52, flexShrink: 0 }}>
+        <div style={{ width: 42, flexShrink: 0 }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: day.isSchoolHolidayWeekday ? theme.amber : day.isWorkedWeekend ? theme.amber : day.isRestDay ? theme.textMuted : theme.textPrimary }}>{day.dayOfMonth}</div>
           <div style={{ fontSize: 10, color: theme.textMuted }}>{dayOfWeekShort}</div>
         </div>
 
-        {/* Pot balance */}
-        <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 22, fontWeight: 800, color: potColor, fontVariantNumeric: 'tabular-nums', lineHeight: 1 }}>
+        {/* Bills pot — main value */}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 20, fontWeight: 800, color: potColor, fontVariantNumeric: 'tabular-nums', lineHeight: 1 }}>
             {day.billsPotAfter < 0 ? '-' : ''}{fmt(day.billsPotAfter)}
           </div>
-          <div style={{ fontSize: 10, color: theme.textMuted, marginTop: 1 }}>bills pot{hasOverride ? ' *' : ''}</div>
         </div>
 
-        {/* IN / OUT */}
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
-          {day.income > 0 && (
-            <div style={{ fontSize: 11, color: theme.green, fontVariantNumeric: 'tabular-nums' }}>
-              +{fmt(day.income)}{day.afjIn > 0 ? ` +AFJ${fmt(day.afjIn)}` : ''}
-            </div>
-          )}
-          {totalOut > 0 && (
-            <div style={{ fontSize: 11, color: theme.red, fontVariantNumeric: 'tabular-nums' }}>
-              -{fmt(totalOut)}
-            </div>
-          )}
+        {/* Savings + Spending — compact column */}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 1, flexShrink: 0, paddingRight: 6, borderRight: `1px solid ${theme.border}` }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: savingsColor, fontVariantNumeric: 'tabular-nums' }}>
+            {fmt(day.savingsPotAfter)}
+          </div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: spendingColor, fontVariantNumeric: 'tabular-nums' }}>
+            {fmt(day.spendingPotAfter)}
+          </div>
         </div>
 
-        {/* Indicators */}
+        {/* Tags + chevron */}
         <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexShrink: 0 }}>
           {day.isPayday && (
-            <span style={{
-              fontSize: 10, fontWeight: 700, color: theme.blue,
-              background: `${theme.blue}26`, borderRadius: 4, padding: '2px 5px'
-            }}>PAY</span>
+            <span style={{ fontSize: 9, fontWeight: 700, color: theme.blue, background: `${theme.blue}26`, borderRadius: 4, padding: '2px 4px' }}>PAY</span>
           )}
           {day.isSchoolHolidayWeekday && (
-            <span style={{
-              fontSize: 10, fontWeight: 600, color: theme.amber,
-              background: `${theme.amber}1f`, borderRadius: 4, padding: '2px 5px'
-            }}>HOL</span>
+            <span style={{ fontSize: 9, fontWeight: 600, color: theme.amber, background: `${theme.amber}1f`, borderRadius: 4, padding: '2px 4px' }}>HOL</span>
           )}
           {day.isWorkedWeekend && (
-            <span style={{
-              fontSize: 10, fontWeight: 700, color: theme.amber,
-              background: `${theme.amber}26`, borderRadius: 4, padding: '2px 5px'
-            }}>WKD</span>
+            <span style={{ fontSize: 9, fontWeight: 700, color: theme.amber, background: `${theme.amber}26`, borderRadius: 4, padding: '2px 4px' }}>WKD</span>
           )}
           {day.isRestDay && (
-            <span style={{
-              fontSize: 10, fontWeight: 600, color: theme.textMuted,
-              background: `${theme.textMuted}26`, borderRadius: 4, padding: '2px 5px'
-            }}>REST</span>
+            <span style={{ fontSize: 9, fontWeight: 600, color: theme.textMuted, background: `${theme.textMuted}26`, borderRadius: 4, padding: '2px 4px' }}>REST</span>
           )}
           {day.carCost > 0 && <span style={{ color: theme.textSecondary }}><CarIcon size={12} /></span>}
           <ChevronIcon down={!expanded} size={14} />
         </div>
       </div>
 
-      {/* Payday highlight */}
-      {day.isPayday && (
-        <div style={{
-          marginTop: 8, padding: '6px 10px',
-          background: `${theme.blue}1f`, borderRadius: 6,
-        }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontSize: 12, color: theme.blueLight }}>AFJ received</span>
-            <span style={{ fontSize: 16, fontWeight: 700, color: theme.blue, fontVariantNumeric: 'tabular-nums' }}>
-              +{fmt(day.afjIn)}
-            </span>
-          </div>
-          {day.ringFenceCarryIn > 0 && (
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
-              <span style={{ fontSize: 12, color: theme.amber }}>Split carry-in</span>
-              <span style={{ fontSize: 14, fontWeight: 700, color: theme.amber, fontVariantNumeric: 'tabular-nums' }}>
-                +{fmtMoney(day.ringFenceCarryIn)}
-              </span>
-            </div>
-          )}
-        </div>
-      )}
-
       {/* Expanded detail */}
       {expanded && (
         <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${theme.border}` }}>
 
-          {/* Income section */}
-          <div style={{ marginBottom: 8 }}>
-            <div style={{ fontSize: 11, color: theme.textMuted, marginBottom: 4 }}>Income</div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
-              <span style={{ color: theme.textSecondary }}>
-                {day.isSchoolHolidayWeekday ? 'School holiday' : day.isWorkedWeekend ? 'Worked weekend' : day.isRestDay ? 'Rest day' : 'Working day'}
-              </span>
-              <span style={{ color: day.isRestDay ? theme.textMuted : theme.green, fontVariantNumeric: 'tabular-nums' }}>
-                {day.isRestDay ? '£0' : `+${fmtMoney(day.income - day.extraIncomeToday.reduce((s, e) => s + e.amount, 0))}`}
-              </span>
+          {/* Labels under top values */}
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 12 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 9, color: theme.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Bills pot{hasOverride ? ' *' : ''}</div>
             </div>
-            {day.afjIn > 0 && (
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginTop: 2 }}>
-                <span style={{ color: theme.textSecondary }}>AFJ</span>
-                <span style={{ color: theme.blue, fontVariantNumeric: 'tabular-nums' }}>+{fmtMoney(day.afjIn)}</span>
-              </div>
-            )}
-            {day.ringFenceCarryIn > 0 && (
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginTop: 2 }}>
-                <span style={{ color: theme.textSecondary }}>Split carry-in</span>
-                <span style={{ color: theme.amber, fontVariantNumeric: 'tabular-nums' }}>+{fmtMoney(day.ringFenceCarryIn)}</span>
-              </div>
-            )}
-            {day.extraIncomeToday.map((e, i) => (
-              <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginTop: 2 }}>
-                <span style={{ color: theme.textSecondary }}>{e.name}</span>
-                <span style={{ color: theme.green, fontVariantNumeric: 'tabular-nums' }}>+{fmtMoney(e.amount)}</span>
-              </div>
-            ))}
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 1, paddingRight: 6 }}>
+              <div style={{ fontSize: 9, color: savingsColor, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Savings +{fmtMoney(day.savingsToday)}</div>
+              <div style={{ fontSize: 9, color: spendingColor, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Spending +{fmtMoney(day.spending)}</div>
+            </div>
+            <div style={{ width: 18 }} />
           </div>
 
-          {/* Bills out section */}
-          {day.billDetails.length > 0 && (
-            <div style={{ marginBottom: 8 }}>
-              <div style={{ fontSize: 11, color: theme.textMuted, marginBottom: 4 }}>Bills out</div>
-              {day.billDetails.map((b, i) => (
-                <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 2 }}>
+          {/* Ingoings */}
+          <div style={{ marginBottom: 8, background: theme.bg, borderRadius: 8, padding: '8px 10px' }}>
+            <div style={{ fontSize: 10, fontWeight: 600, color: theme.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>In</div>
+            {day.isRestDay ? (
+              <div style={{ fontSize: 12, color: theme.textMuted }}>Rest day — no contribution</div>
+            ) : (
+              <>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 2 }}>
+                  <span style={{ color: theme.textSecondary }}>
+                    {day.isSchoolHolidayWeekday ? 'Holiday rate' : day.isWorkedWeekend ? 'Weekend rate' : 'Day rate'}
+                  </span>
+                  <span style={{ color: theme.green, fontVariantNumeric: 'tabular-nums' }}>
+                    +{fmtMoney(day.income - day.extraIncomeToday.reduce((s, e) => s + e.amount, 0))}
+                  </span>
+                </div>
+                {day.afjIn > 0 && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 2 }}>
+                    <span style={{ color: theme.textSecondary }}>AFJ salary</span>
+                    <span style={{ color: theme.blue, fontVariantNumeric: 'tabular-nums' }}>+{fmtMoney(day.afjIn)}</span>
+                  </div>
+                )}
+                {day.ringFenceCarryIn > 0 && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 2 }}>
+                    <span style={{ color: theme.textSecondary }}>Carry-in</span>
+                    <span style={{ color: theme.amber, fontVariantNumeric: 'tabular-nums' }}>+{fmtMoney(day.ringFenceCarryIn)}</span>
+                  </div>
+                )}
+                {day.extraIncomeToday.map((e, idx) => (
+                  <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 2 }}>
+                    <span style={{ color: theme.textSecondary }}>{e.name}</span>
+                    <span style={{ color: theme.green, fontVariantNumeric: 'tabular-nums' }}>+{fmtMoney(e.amount)}</span>
+                  </div>
+                ))}
+              </>
+            )}
+          </div>
+
+          {/* Outgoings */}
+          {(day.billDetails.length > 0 || day.carCost > 0) && (
+            <div style={{ marginBottom: 8, background: theme.bg, borderRadius: 8, padding: '8px 10px' }}>
+              <div style={{ fontSize: 10, fontWeight: 600, color: theme.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Out</div>
+              {day.billDetails.map((b, idx) => (
+                <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 2 }}>
                   <span style={{ color: theme.textSecondary }}>{b.name}</span>
                   <span style={{ color: theme.red, fontVariantNumeric: 'tabular-nums' }}>-{fmtMoney(b.amount)}</span>
                 </div>
               ))}
+              {day.carCost > 0 && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 2 }}>
+                  <span style={{ color: theme.textSecondary, display: 'flex', alignItems: 'center', gap: 4 }}><CarIcon size={12} /> Car rent</span>
+                  <span style={{ color: theme.red, fontVariantNumeric: 'tabular-nums' }}>-{fmtMoney(day.carCost)}</span>
+                </div>
+              )}
             </div>
           )}
 
-          {/* Car rent */}
-          {day.carCost > 0 && (
-            <div style={{ marginBottom: 8 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
-                <span style={{ color: theme.textSecondary, display: 'flex', alignItems: 'center', gap: 4 }}>
-                  <CarIcon size={12} /> Car rent
-                </span>
-                <span style={{ color: theme.red, fontVariantNumeric: 'tabular-nums' }}>-{fmtMoney(day.carCost)}</span>
-              </div>
-            </div>
-          )}
-
-          {/* Savings pot and Spending pot */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 8 }}>
-            <div style={{ background: theme.bg, borderRadius: 8, padding: '8px 10px' }}>
-              <div style={{ fontSize: 10, color: theme.textMuted, marginBottom: 2 }}>Savings pot</div>
-              <div style={{ fontSize: 16, fontWeight: 700, color: theme.purple, fontVariantNumeric: 'tabular-nums' }}>
-                {fmt(day.savingsPotAfter)}
-              </div>
-              <div style={{ fontSize: 10, color: theme.textMuted }}>+{fmtMoney(day.savingsToday)} today</div>
-            </div>
-            <div style={{ background: theme.bg, borderRadius: 8, padding: '8px 10px' }}>
-              <div style={{ fontSize: 10, color: theme.textMuted, marginBottom: 2 }}>Spending pot</div>
-              <div style={{ fontSize: 16, fontWeight: 700, color: day.spendingPotAfter >= 0 ? theme.textPrimary : theme.red, fontVariantNumeric: 'tabular-nums' }}>
-                {fmt(day.spendingPotAfter)}
-              </div>
-              <div style={{ fontSize: 10, color: theme.textMuted }}>{day.spending >= 0 ? '+' : ''}{fmtMoney(day.spending)} today</div>
-            </div>
-          </div>
-
-          {/* Day type label */}
-          {day.isSchoolHolidayWeekday && day.holidayName && (
-            <div style={{ marginTop: 8, fontSize: 11, color: theme.amber }}>
-              School holiday: {day.holidayName}
-            </div>
-          )}
-          {day.isWorkedWeekend && (
-            <div style={{ marginTop: 8, fontSize: 11, color: theme.amber }}>
-              Worked weekend · {fmt(day.weekendRate)}/day
-            </div>
-          )}
-          {day.isRestDay && (
-            <div style={{ marginTop: 8, fontSize: 11, color: theme.textMuted }}>
-              Rest day — no income
-            </div>
-          )}
-          {hasOverride && (
-            <div style={{ marginTop: 8, fontSize: 11, color: theme.amber }}>
-              Balance manually set
+          {/* Day type note */}
+          {(day.isWorkedWeekend || (day.isSchoolHolidayWeekday && day.holidayName) || hasOverride) && (
+            <div style={{ fontSize: 11, color: theme.textMuted, marginTop: 4 }}>
+              {day.isWorkedWeekend && `Worked weekend · £${day.weekendRate}/day`}
+              {day.isSchoolHolidayWeekday && day.holidayName && `School holiday: ${day.holidayName}`}
+              {hasOverride && ' · Balance manually set'}
             </div>
           )}
         </div>
