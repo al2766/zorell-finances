@@ -1276,6 +1276,7 @@ function DayCard({
   }
 
   function handleTouchStart(e: React.TouchEvent) {
+    e.preventDefault() // prevents iOS text selection and native callout menu
     const t = e.touches[0]
     touchStartPos.current = { x: t.clientX, y: t.clientY }
     touchMoved.current = false
@@ -1320,6 +1321,7 @@ function DayCard({
         marginBottom: 6,
         cursor: 'pointer',
         userSelect: 'none',
+        WebkitUserSelect: 'none',
         opacity: cardOpacity,
         outline: hasOverride ? `2px solid ${theme.amber}` : 'none',
       }}
@@ -3303,8 +3305,7 @@ export default function FinanceSimulator() {
           <div style={{ marginBottom: 8 }}>
             {currentSim.days
               .filter(day => {
-                if (!isCurrentRealMonth) return true
-                // Hide past days in the current real-world month
+                // Always hide past days — only show today and onwards
                 const d = day.date
                 const dYear = d.getFullYear()
                 const dMonth = d.getMonth() + 1
@@ -3340,7 +3341,7 @@ export default function FinanceSimulator() {
             <div style={{ marginBottom: 8 }}>
               {currentSim.days
                 .filter(day => {
-                  if (!isCurrentRealMonth) return true
+                  // Always hide past days — only show today and onwards
                   const d = day.date
                   const dYear = d.getFullYear()
                   const dMonth = d.getMonth() + 1
