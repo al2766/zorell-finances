@@ -669,12 +669,13 @@ function simulateCycle(
     // ── New bills pot logic ─────────────────────────────────────
 
     // Step 1 — income_in for this day's pot calculation
+    // Day 0: own income (AFJ + rate + carry-in). Day 1: zero (day 0's rate already in 1850). Day 2+: previous day's rate.
     let income_in: number
     if (i === 0) {
-      // Payday: full picture — taxi rate + extras + AFJ + ring-fence carry-in
       income_in = baseIncome + extraIncomeTotal + afjIn + carryInToday
+    } else if (i === 1) {
+      income_in = 0
     } else {
-      // Every other day: yesterday's taxi rate + extras only (no AFJ repeat)
       income_in = prevBaseIncome + prevExtraIncome
     }
 
@@ -686,13 +687,16 @@ function simulateCycle(
     const totalBillsOut = billsDueAmt + carCost + fuelCost
     let dailyWorking = income_in - totalBillsOut
 
-    // Step 4 — bills pot accumulates; contribution only deducted if positive
-    let contribDeducted = 0
+    // Step 4 — bills pot:
+    // If income covers bills → pot GROWS by contribution amount
+    // If bills exceed income → pot ABSORBS the deficit (shrinks)
     if (dailyWorking > 0) {
-      contribDeducted = billContrib
+      billsPot += billContrib
       dailyWorking -= billContrib
+    } else {
+      billsPot += dailyWorking  // dailyWorking is negative — pot absorbs shortfall
+      dailyWorking = 0
     }
-    billsPot = billsPot + income_in - totalBillsOut - contribDeducted
 
     // Step 5 — apply balance override if present
     if (balanceOverrides?.[dateKey] !== undefined) {
