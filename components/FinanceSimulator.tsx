@@ -98,6 +98,7 @@ interface Settings {
   darkMode: boolean
   paydayDay: number
   weekendDailyMiles: number
+  carRentDayOfWeek: number  // 0=Sun 1=Mon 2=Tue 3=Wed 4=Thu 5=Fri 6=Sat
 }
 
 interface FuelOverride {
@@ -251,6 +252,7 @@ const DEFAULT_SETTINGS: Settings = {
   darkMode: false,
   paydayDay: 8,
   weekendDailyMiles: 60,
+  carRentDayOfWeek: 3,  // Wednesday
 }
 
 const DEFAULT_SLIDERS: Sliders = {
@@ -528,13 +530,12 @@ function simulateCycle(
   const afjAmount = calcAFJ(prevMonth, prevYear, settings.afjDailyRate)
 
   const car = getCarSettings(month, year, settings)
-  const carRentDays = new Set<string>()
-  for (let i = 0; i < 4; i++) {
-    const d = new Date(year, month - 1, paydayDay + i * 7)
-    if (d.getMonth() + 1 === month) {
-      carRentDays.add(d.toISOString().slice(0, 10))
-    }
-  }
+  const carRentDayOfWeek = settings.carRentDayOfWeek ?? 3
+  const carRentDays = new Set<string>(
+    cycleDays
+      .filter(d => d.getDay() === carRentDayOfWeek)
+      .map(d => d.toISOString().slice(0, 10))
+  )
 
   const fuelFillDays = new Set<string>()
   const cycleStart = new Date(year, month - 1, paydayDay).getTime()
@@ -607,6 +608,7 @@ function simulateCycle(
   let prevIsPayday = false
   let prevAfjIn = 0
   let prevCarryIn = 0
+  let prevWasReset = false  // true after a balance override day or first day — makes next day income_in = 0
 
   for (let i = 0; i < cycleDays.length; i++) {
     const date = cycleDays[i]
@@ -669,11 +671,12 @@ function simulateCycle(
     // ── New bills pot logic ─────────────────────────────────────
 
     // Step 1 — income_in for this day's pot calculation
-    // Day 0: own income (AFJ + rate + carry-in). Day 1: zero (day 0's rate already in 1850). Day 2+: previous day's rate.
+    // First day or balance-override day: use own income. Day after either: zero. Otherwise: prev day's income.
+    const hasOverrideToday = balanceOverrides?.[dateKey] !== undefined
     let income_in: number
-    if (i === 0) {
+    if (i === 0 || hasOverrideToday) {
       income_in = baseIncome + extraIncomeTotal + afjIn + carryInToday
-    } else if (i === 1) {
+    } else if (i === 1 || prevWasReset) {
       income_in = 0
     } else {
       income_in = prevBaseIncome + prevExtraIncome
@@ -698,9 +701,9 @@ function simulateCycle(
       dailyWorking = 0
     }
 
-    // Step 5 — apply balance override if present
-    if (balanceOverrides?.[dateKey] !== undefined) {
-      billsPot = balanceOverrides[dateKey]
+    // Step 5 — apply balance override: replace pot value, mark next day as reset
+    if (hasOverrideToday) {
+      billsPot = balanceOverrides![dateKey]
     }
 
     // Step 6 — savings and spending from dailyWorking (post-contribution)
@@ -731,6 +734,7 @@ function simulateCycle(
     prevIsPayday = isPayday
     prevAfjIn = afjIn
     prevCarryIn = carryInToday
+    prevWasReset = i === 0 || hasOverrideToday  // next day gets income_in = 0
 
     const billDetailsArr: { name: string; amount: number }[] = [
       ...billsToday.map(b => ({ name: b.name, amount: b.amount })),
@@ -2222,6 +2226,27 @@ function SettingsPanel({
         {/* Current car */}
         <div style={{ marginBottom: 24 }}>
           <div style={{ fontSize: 14, fontWeight: 600, color: theme.blueLight, marginBottom: 12 }}>Current car (Apr 2026)</div>
+          {/* Car rent day of week */}
+          <div style={{ marginBottom: 14 }}>
+            <label style={{ fontSize: 12, color: theme.textMuted, display: 'block', marginBottom: 6 }}>Car rent day of week</label>
+            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+              {['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map((d, idx) => {
+                const active = (local.carRentDayOfWeek ?? 3) === idx
+                return (
+                  <button
+                    key={d}
+                    onClick={() => setLocal(prev => ({ ...prev, carRentDayOfWeek: idx }))}
+                    style={{
+                      padding: '5px 10px', fontSize: 12, fontWeight: active ? 700 : 400,
+                      borderRadius: 7, cursor: 'pointer', border: `1px solid ${active ? theme.blue : theme.border}`,
+                      background: active ? `${theme.blue}22` : theme.cardAlt,
+                      color: active ? theme.blueLight : theme.textSecondary,
+                    }}
+                  >{d}</button>
+                )
+              })}
+            </div>
+          </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             {[
               { label: 'Weekly rent (£)', field: 'carWeeklyRent' as const },
@@ -3464,6 +3489,7 @@ export default function FinanceSimulator() {
           darkMode: parsed.darkMode ?? false,
           paydayDay: parsed.paydayDay ?? DEFAULT_SETTINGS.paydayDay,
           weekendDailyMiles: parsed.weekendDailyMiles ?? DEFAULT_SETTINGS.weekendDailyMiles,
+          carRentDayOfWeek: parsed.carRentDayOfWeek ?? DEFAULT_SETTINGS.carRentDayOfWeek,
         })
       }
       const sl = localStorage.getItem('fin-sliders')
