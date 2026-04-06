@@ -2968,62 +2968,63 @@ function GenerateModal({
   onLoad: (proposals: AiProposal[]) => void
   theme: ThemeTokens
 }) {
-  const [pasteJson, setPasteJson] = useState('')
-  const [parseError, setParseError] = useState<string | null>(null)
-  const [cmdCopied, setCmdCopied] = useState(false)
-
-  const command = `claude --dangerously-skip-permissions "$(cat <<'PROMPT'\nYou are analyzing a personal finances simulation app.\n\n${dump}\n\nYour task: generate 3 proposals to optimize this person's finances.\nFor each proposal:\n1. Give it a short title (e.g. "Shift debt cluster")\n2. Write 1-2 sentence description of the strategy\n3. Specify any bill day changes: { "bill-id": newDay }\n4. Specify any slider changes: { "normalDayRate": X, "billsPerDay": X, etc }\n5. Predict: end pot improvement, red day reduction\n\nOutput ONLY valid JSON in this exact format:\n[\n  {\n    "id": "prop-1",\n    "title": "...",\n    "description": "...",\n    "sliders": { ... },\n    "billDayOverrides": { ... },\n    "endPots": [],\n    "redDayCount": 0,\n    "totalSavings": 0\n  }\n]\n\nOutput the JSON array only. No explanation outside the JSON.\nPROMPT\n)"`
+  const [status, setStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
+  const [errorMsg, setErrorMsg] = useState('')
 
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape' && status !== 'loading') onClose()
     }
     window.addEventListener('keydown', handleKey)
     return () => window.removeEventListener('keydown', handleKey)
-  }, [onClose])
+  }, [onClose, status])
 
-  function copyCmd() {
-    navigator.clipboard.writeText(command).then(() => {
-      setCmdCopied(true)
-      setTimeout(() => setCmdCopied(false), 2000)
-    })
-  }
+  // Auto-fire on mount
+  useEffect(() => {
+    generate()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
-  function loadProposals() {
-    setParseError(null)
+  async function generate() {
+    setStatus('loading')
+    setErrorMsg('')
     try {
-      const parsed = JSON.parse(pasteJson.trim()) as unknown
-      if (!Array.isArray(parsed)) {
-        setParseError('Expected a JSON array')
-        return
-      }
-      const proposals: AiProposal[] = (parsed as Record<string, unknown>[]).map((p, i) => ({
+      const res = await fetch('/api/generate-proposals', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dataDump: dump }),
+      })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`)
+      if (!Array.isArray(json.proposals)) throw new Error('Invalid response format')
+      const proposals: AiProposal[] = (json.proposals as Record<string, unknown>[]).map((p, i) => ({
         id: String(p.id ?? `prop-${Date.now()}-${i}`),
         title: String(p.title ?? 'Untitled'),
         description: String(p.description ?? ''),
-        createdAt: new Date().toISOString(),
+        createdAt: String(p.createdAt ?? new Date().toISOString()),
         sliders: (p.sliders as Partial<Sliders>) ?? undefined,
         billDayOverrides: (p.billDayOverrides as Record<string, number>) ?? undefined,
         endPots: Array.isArray(p.endPots) ? (p.endPots as number[]) : [],
         redDayCount: Number(p.redDayCount ?? 0),
         totalSavings: Number(p.totalSavings ?? 0),
       }))
+      setStatus('done')
       onLoad(proposals)
       onClose()
     } catch (e) {
-      setParseError(`Invalid JSON: ${e instanceof Error ? e.message : String(e)}`)
+      setErrorMsg(e instanceof Error ? e.message : String(e))
+      setStatus('error')
     }
   }
 
   return (
     <div
-      onClick={onClose}
+      onClick={status !== 'loading' ? onClose : undefined}
       style={{
         position: 'fixed', inset: 0, zIndex: 800,
         background: theme.overlay,
-        display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
         padding: '20px 12px',
-        overflowY: 'auto',
       }}
     >
       <div
@@ -3031,129 +3032,81 @@ function GenerateModal({
         style={{
           background: theme.card,
           border: `1px solid ${theme.border}`,
-          borderRadius: 16,
-          padding: 20,
+          borderRadius: 20,
+          padding: 32,
           width: '100%',
-          maxWidth: 560,
+          maxWidth: 380,
           boxShadow: '0 8px 40px rgba(0,0,0,0.4)',
-          marginTop: 8,
+          textAlign: 'center',
         }}
       >
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-          <span style={{ fontSize: 16, fontWeight: 700, color: theme.textPrimary }}>Generate AI proposals</span>
-          <button
-            onClick={onClose}
-            style={{ background: 'transparent', border: 'none', color: theme.textMuted, cursor: 'pointer', padding: 4 }}
-          >
-            <CloseIcon size={18} />
-          </button>
-        </div>
+        {status === 'loading' && (
+          <>
+            {/* Animated pulse ring */}
+            <div style={{ position: 'relative', width: 64, height: 64, margin: '0 auto 20px' }}>
+              <div style={{
+                position: 'absolute', inset: 0, borderRadius: '50%',
+                border: `3px solid ${theme.blue}33`,
+              }} />
+              <div style={{
+                position: 'absolute', inset: 0, borderRadius: '50%',
+                border: `3px solid ${theme.blue}`,
+                borderTopColor: 'transparent',
+                animation: 'spin 0.9s linear infinite',
+              }} />
+              <div style={{
+                position: 'absolute', inset: 8, borderRadius: '50%',
+                background: `${theme.blue}18`,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 20,
+              }}>
+                ✦
+              </div>
+            </div>
+            <div style={{ fontSize: 17, fontWeight: 700, color: theme.textPrimary, marginBottom: 8 }}>
+              Analysing your finances…
+            </div>
+            <div style={{ fontSize: 13, color: theme.textSecondary, lineHeight: 1.6 }}>
+              Claude is running simulations across your bills, sliders, and income targets to find the best combos.
+            </div>
+          </>
+        )}
 
-        <p style={{ fontSize: 13, color: theme.textSecondary, marginBottom: 14, lineHeight: 1.6 }}>
-          Run the command below in your terminal. Claude will analyze your current simulation and return 3 optimized proposals as JSON. Paste the JSON output in the box below.
-        </p>
-
-        {/* Command block */}
-        <div style={{
-          background: theme.bg,
-          border: `1px solid ${theme.border}`,
-          borderRadius: 10,
-          overflow: 'hidden',
-          marginBottom: 14,
-        }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', borderBottom: `1px solid ${theme.border}` }}>
-            <span style={{ fontSize: 11, color: theme.textMuted, fontFamily: 'monospace' }}>Terminal command</span>
-            <button
-              onClick={copyCmd}
-              style={{
-                background: cmdCopied ? `${theme.green}22` : `${theme.blue}22`,
-                border: `1px solid ${cmdCopied ? theme.green : theme.blue}66`,
-                color: cmdCopied ? theme.green : theme.blue,
-                borderRadius: 6, padding: '4px 10px', fontSize: 11, fontWeight: 600,
-                cursor: 'pointer', fontFamily: 'inherit',
-              }}
-            >
-              {cmdCopied ? 'Copied!' : 'Copy command'}
-            </button>
-          </div>
-          <pre style={{
-            fontFamily: '"SF Mono", "Fira Code", monospace',
-            fontSize: 11,
-            color: theme.textSecondary,
-            padding: '10px 12px',
-            margin: 0,
-            overflowX: 'auto',
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-all',
-            maxHeight: 160,
-            overflowY: 'auto',
-            lineHeight: 1.5,
-            userSelect: 'text',
-          }}>
-            {command}
-          </pre>
-        </div>
-
-        {/* Paste JSON */}
-        <div style={{ marginBottom: 14 }}>
-          <label style={{ fontSize: 12, color: theme.textSecondary, display: 'block', marginBottom: 6 }}>
-            Paste Claude&apos;s JSON output here
-          </label>
-          <textarea
-            value={pasteJson}
-            onChange={e => { setPasteJson(e.target.value); setParseError(null) }}
-            placeholder={'[\n  {\n    "id": "prop-1",\n    "title": "...",\n    ...\n  }\n]'}
-            style={{
-              width: '100%',
-              minHeight: 120,
-              background: theme.bg,
-              border: `1px solid ${parseError ? theme.red : theme.border}`,
-              borderRadius: 8,
-              color: theme.textPrimary,
-              padding: '10px 12px',
-              fontSize: 12,
-              fontFamily: '"SF Mono", "Fira Code", monospace',
-              resize: 'vertical',
-              outline: 'none',
-              boxSizing: 'border-box',
-            }}
-          />
-          {parseError && (
-            <div style={{ fontSize: 11, color: theme.red, marginTop: 4 }}>{parseError}</div>
-          )}
-        </div>
-
-        <div style={{ display: 'flex', gap: 10 }}>
-          <button
-            onClick={loadProposals}
-            disabled={!pasteJson.trim()}
-            style={{
-              flex: 1,
-              background: pasteJson.trim() ? theme.blue : theme.border,
-              color: pasteJson.trim() ? '#fff' : theme.textMuted,
-              border: 'none', borderRadius: 8,
-              padding: '11px', fontSize: 14, fontWeight: 700,
-              cursor: pasteJson.trim() ? 'pointer' : 'default',
-              fontFamily: 'inherit',
-            }}
-          >
-            Load proposals
-          </button>
-          <button
-            onClick={onClose}
-            style={{
-              flex: 1,
-              background: theme.border,
-              color: theme.textSecondary,
-              border: 'none', borderRadius: 8,
-              padding: '11px', fontSize: 14,
-              cursor: 'pointer', fontFamily: 'inherit',
-            }}
-          >
-            Cancel
-          </button>
-        </div>
+        {status === 'error' && (
+          <>
+            <div style={{ fontSize: 32, marginBottom: 16 }}>⚠️</div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: theme.red, marginBottom: 8 }}>
+              Generation failed
+            </div>
+            <div style={{ fontSize: 13, color: theme.textSecondary, marginBottom: 20, lineHeight: 1.5 }}>
+              {errorMsg}
+            </div>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button
+                onClick={generate}
+                style={{
+                  flex: 1, background: theme.blue, color: '#fff', border: 'none',
+                  borderRadius: 10, padding: '12px', fontSize: 14, fontWeight: 700,
+                  cursor: 'pointer', fontFamily: 'inherit',
+                }}
+              >
+                Try again
+              </button>
+              <button
+                onClick={onClose}
+                style={{
+                  flex: 1, background: theme.border, color: theme.textSecondary,
+                  border: 'none', borderRadius: 10, padding: '12px', fontSize: 14,
+                  cursor: 'pointer', fontFamily: 'inherit',
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </>
+        )}
       </div>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   )
 }
