@@ -592,7 +592,7 @@ function simulateCycle(
       return states.filter(bs => bs.day <= 7)
     })
 
-  let billsPot = startingPot
+  let billsPot = 0  // each cycle starts fresh; income_in on day 0 is the true opening balance
   let ringFenceAccumulated = 0
   let cumulativeSavings = 0
   let cumulativeSpending = 0
