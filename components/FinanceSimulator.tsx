@@ -16,6 +16,68 @@ import { BILLS, SEED_CUSTOM_BILLS, HOLIDAYS, AFJ_FULL_TERM_DAYS, MONTH_SHORT } f
 import type { Bill, CustomBill } from '@/lib/data'
 import AddBillModal from '@/components/AddBillModal'
 
+// ─── Theme tokens ───────────────────────────────────────────────
+
+interface ThemeTokens {
+  bg: string
+  card: string
+  cardAlt: string
+  border: string
+  borderStrong: string
+  textPrimary: string
+  textSecondary: string
+  textMuted: string
+  green: string
+  red: string
+  amber: string
+  blue: string
+  blueLight: string
+  purple: string
+  sliderTrack: string
+  overlay: string
+  cardHover: string
+}
+
+const DARK: ThemeTokens = {
+  bg: '#080d14',
+  card: '#0f1923',
+  cardAlt: '#0d1117',
+  border: '#1e293b',
+  borderStrong: '#334155',
+  textPrimary: '#f1f5f9',
+  textSecondary: '#94a3b8',
+  textMuted: '#475569',
+  green: '#22c55e',
+  red: '#ef4444',
+  amber: '#f59e0b',
+  blue: '#3b82f6',
+  blueLight: '#93c5fd',
+  purple: '#a855f7',
+  sliderTrack: '#1e293b',
+  overlay: 'rgba(0,0,0,0.75)',
+  cardHover: 'rgba(255,255,255,0.06)',
+}
+
+const LIGHT: ThemeTokens = {
+  bg: '#f8fafc',
+  card: '#ffffff',
+  cardAlt: '#f1f5f9',
+  border: '#e2e8f0',
+  borderStrong: '#cbd5e1',
+  textPrimary: '#0f172a',
+  textSecondary: '#475569',
+  textMuted: '#94a3b8',
+  green: '#16a34a',
+  red: '#dc2626',
+  amber: '#d97706',
+  blue: '#2563eb',
+  blueLight: '#2563eb',
+  purple: '#9333ea',
+  sliderTrack: '#e2e8f0',
+  overlay: 'rgba(0,0,0,0.5)',
+  cardHover: 'rgba(0,0,0,0.04)',
+}
+
 // ─── Types ──────────────────────────────────────────────────────
 
 interface ExtraIncome {
@@ -33,6 +95,7 @@ interface Settings {
   carChanges: CarChange[]
   afjDailyRate: number
   extraIncomes: ExtraIncome[]
+  darkMode: boolean
 }
 
 interface CarChange {
@@ -117,6 +180,23 @@ interface ExtraIncomeModalState {
   editIndex: number | null
 }
 
+// Balance override modal state
+interface BalanceOverrideModalState {
+  open: boolean
+  dateKey: string  // YYYY-MM-DD
+  dateLabel: string
+  currentValue: number
+}
+
+// Day card context menu state
+interface DayCardMenuState {
+  x: number
+  y: number
+  dateKey: string
+  dateLabel: string
+  billsPotAfter: number
+}
+
 // ─── Constants ──────────────────────────────────────────────────
 
 const MONTHS: MonthOption[] = [
@@ -148,6 +228,7 @@ const DEFAULT_SETTINGS: Settings = {
   ],
   afjDailyRate: 85,
   extraIncomes: [],
+  darkMode: false,
 }
 
 const DEFAULT_SLIDERS: Sliders = {
@@ -170,6 +251,11 @@ function fmtMoney(n: number): string {
 
 function fmtSigned(n: number): string {
   return (n < 0 ? '-' : '+') + '£' + Math.abs(n).toFixed(0)
+}
+
+function todayDateKey(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
 function isDateInHoliday(date: Date): { inHoliday: boolean; name: string | null } {
@@ -248,8 +334,6 @@ function isBillActive(bill: Bill, month: number, year: number): boolean {
 
 // ─── Simulation Engine ──────────────────────────────────────────
 
-// ─── Custom bill helpers ────────────────────────────────────────
-
 function isCustomBillActiveInMonth(bill: CustomBill, month: number, year: number): boolean {
   if (bill.frequency === 'monthly') {
     const val = year * 100 + month
@@ -269,7 +353,6 @@ function isCustomBillActiveInMonth(bill: CustomBill, month: number, year: number
   return false
 }
 
-// Convert custom bills to Bill-shaped objects for a given month (for drag view)
 function customBillsToBills(customBills: CustomBill[], month: number, year: number, billDayOverrides: Record<string, number>): Bill[] {
   const result: Bill[] = []
   for (const cb of customBills) {
@@ -287,11 +370,8 @@ function customBillsToBills(customBills: CustomBill[], month: number, year: numb
         moveable: true,
       })
     } else if (cb.frequency === 'weekly') {
-      // For weekly bills, generate one Bill per weekday occurrence in the month
-      // We represent weekly as a single entry on the first occurrence for drag view
       const weekDays = cb.weekDays ?? []
       if (weekDays.length === 0) continue
-      // Find first occurrence of any selected weekday in the cycle (8th onward)
       const daysInMonth = new Date(year, month, 0).getDate()
       let firstDay: number | null = null
       for (let d = 1; d <= daysInMonth; d++) {
@@ -311,7 +391,7 @@ function customBillsToBills(customBills: CustomBill[], month: number, year: numb
         category: cb.category,
         endsMonth: null,
         endsYear: null,
-        moveable: false, // weekly bills can't be meaningfully dragged
+        moveable: false,
       })
     } else if (cb.frequency === 'one-off') {
       const prefix = `${year}-${String(month).padStart(2, '0')}`
@@ -334,12 +414,11 @@ function customBillsToBills(customBills: CustomBill[], month: number, year: numb
   return result
 }
 
-// Build BillState entries from custom bills for simulation
 interface BillState {
   id: string
   name: string
   amount: number
-  day: number  // day of month it fires
+  day: number
 }
 
 function customBillsToBillStates(
@@ -362,18 +441,15 @@ function customBillsToBillStates(
     } else if (cb.frequency === 'weekly') {
       const weekDays = cb.weekDays ?? []
       if (weekDays.length === 0) continue
-      // Find all weekday occurrences in the month cycle
       const daysInMonth = new Date(year, month, 0).getDate()
       const nextMonth = month === 12 ? 1 : month + 1
       const nextYear = month === 12 ? year + 1 : year
-      // days 8–end of month
       for (let d = 8; d <= daysInMonth; d++) {
         const date = new Date(year, month - 1, d)
         if (weekDays.includes(date.getDay())) {
           result.push({ id: `${cb.id}__${d}`, name: cb.name, amount: cb.amount, day: d })
         }
       }
-      // days 1–7 of next month (still in cycle)
       for (let d = 1; d <= 7; d++) {
         const date = new Date(nextYear, nextMonth - 1, d)
         if (weekDays.includes(date.getDay())) {
@@ -406,6 +482,7 @@ function simulateCycle(
   hiddenBillIds?: Set<string>,
   weekendBillsPerDay?: number,
   weekendSavings?: number,
+  balanceOverrides?: Record<string, number>,
 ): { days: DayData[]; endPot: number; ringFenceAccumulated: number } {
   const { normalDayRate, offDayRate, billsPerDay, savingsOnExtra, offDaySplit } = sliders
 
@@ -451,12 +528,8 @@ function simulateCycle(
   const activeBillsThisMonth = BILLS.filter(b => !_hiddenIds.has(b.id) && isBillActive(b, month, year))
   const activeBillsNextMonth = BILLS.filter(b => !_hiddenIds.has(b.id) && isBillActive(b, nextMonth, nextYear))
 
-  // Custom bill states for this cycle.
-  // customBillsToBillStates for 'month' already generates weekly nm-prefixed entries for next-month days 1-7.
-  // For monthly/one-off next-month bills, generate separately.
   const customThisMonth = customBillsToBillStates(_customBills, month, year, billDayOverrides, _hiddenIds)
 
-  // Monthly and one-off custom bills for the next-month days 1–7
   const customNextMonthFixed = _customBills
     .filter(cb => !_hiddenIds.has(cb.id) && (cb.frequency === 'monthly' || cb.frequency === 'one-off'))
     .flatMap(cb => {
@@ -475,14 +548,13 @@ function simulateCycle(
     const dom = date.getDate()
     const dateMonth = date.getMonth() + 1
     const dateYear = date.getFullYear()
-    const dateKey = date.toISOString().slice(0, 10)
+    const dateKey = `${dateYear}-${String(dateMonth).padStart(2, '0')}-${String(dom).padStart(2, '0')}`
     const isFirstDay = i === 0
 
     const weekend = isWeekend(date)
     const { inHoliday, name: holidayName } = isDateInHoliday(date)
     const isOffDay = weekend || inHoliday
 
-    // Classify day type
     const isSchoolHolidayWeekday = !weekend && inHoliday
     const isWorkedWeekend = weekend && workedWeekendDays.includes(dom)
     const isRestDay = weekend && !isWorkedWeekend
@@ -493,13 +565,10 @@ function simulateCycle(
       return assignedDay === dom
     })
 
-    // Custom bills for today
     let customBillsToday: BillState[]
     if (dateMonth === month) {
-      // This-month days: use customThisMonth, exclude nm-prefixed entries
       customBillsToday = customThisMonth.filter(bs => !bs.id.includes('__nm') && bs.day === dom)
     } else {
-      // Next-month days 1-7: nm-prefixed weekly entries from customThisMonth + fixed monthly/one-off
       const nmWeekly = customThisMonth.filter(bs => bs.id.includes('__nm') && bs.day === dom)
       const nmFixed = customNextMonthFixed.filter(bs => bs.day === dom)
       customBillsToday = [...nmWeekly, ...nmFixed]
@@ -510,33 +579,25 @@ function simulateCycle(
     const carCost = carRentDays.has(dateKey) ? car.carWeeklyRent : 0
     const fuelCost = fuelFillDays.has(dateKey) ? car.tankPrice : 0
 
-    // Extra incomes for this day (by day-of-month, using dateMonth)
     const extraIncomesToday = settings.extraIncomes.filter(e => e.day === dom)
     const extraIncomeTotal = extraIncomesToday.reduce((s, e) => s + e.amount, 0)
 
-    // Income by day type
     let baseIncome = 0
     if (!weekend && !inHoliday) {
-      baseIncome = normalDayRate           // normal weekday
+      baseIncome = normalDayRate
     } else if (isSchoolHolidayWeekday) {
-      baseIncome = offDayRate              // school holiday weekday
+      baseIncome = offDayRate
     } else if (isWorkedWeekend) {
-      baseIncome = weekendRate             // worked weekend
+      baseIncome = weekendRate
     }
-    // rest day: baseIncome stays 0
     const income = baseIncome + extraIncomeTotal
 
-    // AFJ on payday (8th)
     const isPayday = dom === 8 && dateMonth === month
     const afjIn = isPayday ? afjAmount : 0
     const carryInToday = isPayday ? ringFenceCarryIn : 0
 
     const billsPotBefore = billsPot
 
-    // Pot changes:
-    // - Rest weekend: completely static (no additions), bills still deduct on due date
-    // - Worked weekend: use weekendBillsPerDay for pot addition
-    // - All other days: use billsPerDay
     const _weekendBillsPerDay = weekendBillsPerDay ?? billsPerDay
     const _weekendSavings = weekendSavings ?? savingsOnExtra
     if (!isRestDay) {
@@ -549,24 +610,25 @@ function simulateCycle(
       billsPot += afjIn + carryInToday
     }
 
-    // Savings, spending and ring-fence logic
+    // Apply balance override if present — replaces computed ending pot
+    if (balanceOverrides?.[dateKey] !== undefined) {
+      billsPot = balanceOverrides[dateKey]
+    }
+
     let savingsToday: number
     let spendingToday: number
     let splitToday: number
 
     if (isSchoolHolidayWeekday) {
-      // School holiday weekday: ring-fence applies, no savings
       savingsToday = 0
       splitToday = offDaySplit
       spendingToday = offDayRate - billsPerDay - offDaySplit - fuelCost
       ringFenceAccumulated += offDaySplit
     } else if (isRestDay) {
-      // Rest weekend: pot is static (no income, no bills-per-day add, no savings)
       savingsToday = 0
       splitToday = 0
       spendingToday = 0
     } else if (isWorkedWeekend) {
-      // Worked weekend: use weekend-specific bills and savings sliders
       splitToday = 0
       const extra = baseIncome + extraIncomeTotal - _weekendBillsPerDay - carCost - fuelCost
       if (extra > 0) {
@@ -576,7 +638,6 @@ function simulateCycle(
       }
       spendingToday = extra - savingsToday
     } else {
-      // Normal weekday: savings on extra
       splitToday = 0
       const extra = baseIncome + extraIncomeTotal - billsPerDay - carCost - fuelCost
       if (extra > 0) {
@@ -590,7 +651,6 @@ function simulateCycle(
     cumulativeSavings += savingsToday
     cumulativeSpending += spendingToday
 
-    // Build billDetails (include fuel fill here)
     const billDetailsArr: { name: string; amount: number }[] = [
       ...billsToday.map(b => ({ name: b.name, amount: b.amount })),
       ...customBillsToday.map(bs => ({ name: bs.name, amount: bs.amount })),
@@ -729,6 +789,7 @@ function SliderRow({
   max,
   onChange,
   color = '#3b82f6',
+  theme,
 }: {
   label: string
   value: number
@@ -736,13 +797,14 @@ function SliderRow({
   max: number
   onChange: (v: number) => void
   color?: string
+  theme: ThemeTokens
 }) {
   const pct = max > min ? ((value - min) / (max - min)) * 100 : 0
   return (
     <div style={{ marginBottom: 14 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-        <span style={{ fontSize: 13, color: '#94a3b8' }}>{label}</span>
-        <span style={{ fontSize: 18, fontWeight: 700, color: '#f1f5f9', fontVariantNumeric: 'tabular-nums' }}>
+        <span style={{ fontSize: 13, color: theme.textSecondary }}>{label}</span>
+        <span style={{ fontSize: 18, fontWeight: 700, color: theme.textPrimary, fontVariantNumeric: 'tabular-nums' }}>
           {fmt(value)}
         </span>
       </div>
@@ -755,7 +817,7 @@ function SliderRow({
           onChange={e => onChange(Number(e.target.value))}
           style={{
             width: '100%',
-            background: `linear-gradient(to right, ${color} ${pct}%, #1e293b ${pct}%)`,
+            background: `linear-gradient(to right, ${color} ${pct}%, ${theme.sliderTrack} ${pct}%)`,
           }}
         />
       </div>
@@ -763,39 +825,287 @@ function SliderRow({
   )
 }
 
+// ─── Balance Override Modal ──────────────────────────────────────
+
+function BalanceOverrideModal({
+  state,
+  onSave,
+  onRemove,
+  onClose,
+  hasExisting,
+  theme,
+}: {
+  state: BalanceOverrideModalState
+  onSave: (dateKey: string, value: number) => void
+  onRemove: (dateKey: string) => void
+  onClose: () => void
+  hasExisting: boolean
+  theme: ThemeTokens
+}) {
+  const [value, setValue] = useState(state.currentValue)
+
+  useEffect(() => {
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', handleKey)
+    return () => window.removeEventListener('keydown', handleKey)
+  }, [onClose])
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 600,
+        background: theme.overlay,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        padding: 20,
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          background: theme.card,
+          border: `1px solid ${theme.border}`,
+          borderRadius: 16,
+          padding: 24,
+          width: '100%',
+          maxWidth: 340,
+          boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
+        }}
+      >
+        <div style={{ fontSize: 16, fontWeight: 700, color: theme.textPrimary, marginBottom: 6 }}>
+          Set pot balance
+        </div>
+        <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 18 }}>
+          {state.dateLabel}
+        </div>
+        <div style={{ marginBottom: 16 }}>
+          <label style={{ fontSize: 12, color: theme.textSecondary, marginBottom: 6, display: 'block' }}>
+            Bills pot balance after this day (£)
+          </label>
+          <input
+            type="number"
+            value={value}
+            onChange={e => setValue(Number(e.target.value))}
+            autoFocus
+            style={{
+              background: theme.cardAlt,
+              border: `1px solid ${theme.border}`,
+              borderRadius: 8,
+              color: theme.textPrimary,
+              padding: '10px 12px',
+              fontSize: 18,
+              fontWeight: 700,
+              width: '100%',
+              outline: 'none',
+              fontFamily: 'inherit',
+              textAlign: 'center',
+            }}
+          />
+        </div>
+        <div style={{ display: 'flex', gap: 10, marginBottom: hasExisting ? 10 : 0 }}>
+          <button
+            onClick={() => { onSave(state.dateKey, value); onClose() }}
+            style={{
+              flex: 1, background: theme.green, color: '#fff', border: 'none',
+              borderRadius: 8, padding: '10px', fontSize: 14, fontWeight: 700,
+              cursor: 'pointer', minHeight: 44,
+            }}
+          >
+            Save
+          </button>
+          <button
+            onClick={onClose}
+            style={{
+              flex: 1, background: theme.border, color: theme.textSecondary, border: 'none',
+              borderRadius: 8, padding: '10px', fontSize: 14, cursor: 'pointer', minHeight: 44,
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+        {hasExisting && (
+          <button
+            onClick={() => { onRemove(state.dateKey); onClose() }}
+            style={{
+              width: '100%', background: 'transparent', border: 'none',
+              color: theme.red, fontSize: 13, cursor: 'pointer',
+              padding: '6px 0', fontFamily: 'inherit',
+              textDecoration: 'underline',
+            }}
+          >
+            Remove override
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ─── Day Card Context Menu ───────────────────────────────────────
+
+function DayCardContextMenu({
+  menu,
+  onClose,
+  onSetBalance,
+  isToday,
+  theme,
+}: {
+  menu: DayCardMenuState
+  onClose: () => void
+  onSetBalance: () => void
+  isToday: boolean
+  theme: ThemeTokens
+}) {
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        onClose()
+      }
+    }
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('mousedown', handleClick)
+    document.addEventListener('keydown', handleKey)
+    return () => {
+      document.removeEventListener('mousedown', handleClick)
+      document.removeEventListener('keydown', handleKey)
+    }
+  }, [onClose])
+
+  return (
+    <div
+      ref={menuRef}
+      style={{
+        position: 'fixed',
+        top: Math.min(menu.y, window.innerHeight - 80),
+        left: Math.min(menu.x, window.innerWidth - 200),
+        zIndex: 500,
+        background: theme.borderStrong,
+        border: `1px solid ${theme.border}`,
+        borderRadius: 10,
+        boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
+        minWidth: 190,
+        overflow: 'hidden',
+      }}
+    >
+      <button
+        onClick={() => { if (isToday) { onSetBalance(); onClose() } }}
+        disabled={!isToday}
+        style={{
+          display: 'block', width: '100%', textAlign: 'left',
+          background: 'transparent', border: 'none',
+          color: isToday ? theme.textPrimary : theme.textMuted,
+          fontSize: 14, padding: '12px 16px', cursor: isToday ? 'pointer' : 'default',
+          fontFamily: 'inherit', minHeight: 44, borderRadius: 0,
+          opacity: isToday ? 1 : 0.6,
+        }}
+        onMouseEnter={e => { if (isToday) (e.currentTarget.style.background = theme.cardHover) }}
+        onMouseLeave={e => { (e.currentTarget.style.background = 'transparent') }}
+      >
+        {isToday ? 'Set balance' : 'Set balance (today only)'}
+      </button>
+    </div>
+  )
+}
+
 // ─── Day Card ───────────────────────────────────────────────────
 
-function DayCard({ day, monthShort }: { day: DayData; monthShort: string }) {
+function DayCard({
+  day,
+  monthShort,
+  theme,
+  onContextMenu,
+  hasOverride,
+}: {
+  day: DayData
+  monthShort: string
+  theme: ThemeTokens
+  onContextMenu: (menu: DayCardMenuState) => void
+  hasOverride: boolean
+}) {
   const [expanded, setExpanded] = useState(false)
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const touchStartPos = useRef<{ x: number; y: number } | null>(null)
+  const touchMoved = useRef(false)
 
-  const potColor = day.billsPotAfter >= 0 ? '#22c55e' : '#ef4444'
+  const potColor = day.billsPotAfter >= 0 ? theme.green : theme.red
   const totalOut = day.billsDue + day.carCost + day.fuelCost
 
   const dayOfWeekShort = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][day.dayOfWeek]
-
-  // Card dim for rest weekends
   const cardOpacity = day.isRestDay ? 0.55 : 1
+
+  const dateKey = `${day.date.getFullYear()}-${String(day.date.getMonth() + 1).padStart(2, '0')}-${String(day.dayOfMonth).padStart(2, '0')}`
+  const dateLabel = `${dayOfWeekShort} ${day.dayOfMonth} ${monthShort}`
+
+  function openMenu(x: number, y: number) {
+    onContextMenu({ x, y, dateKey, dateLabel, billsPotAfter: day.billsPotAfter })
+  }
+
+  function handleContextMenu(e: React.MouseEvent) {
+    e.preventDefault()
+    openMenu(e.clientX, e.clientY)
+  }
+
+  function handleTouchStart(e: React.TouchEvent) {
+    const t = e.touches[0]
+    touchStartPos.current = { x: t.clientX, y: t.clientY }
+    touchMoved.current = false
+    longPressTimer.current = setTimeout(() => {
+      if (!touchMoved.current && touchStartPos.current) {
+        openMenu(touchStartPos.current.x, touchStartPos.current.y)
+      }
+    }, 500)
+  }
+
+  function handleTouchMove(e: React.TouchEvent) {
+    if (!touchStartPos.current) return
+    const t = e.touches[0]
+    const dx = t.clientX - touchStartPos.current.x
+    const dy = t.clientY - touchStartPos.current.y
+    if (Math.sqrt(dx * dx + dy * dy) > 10) {
+      touchMoved.current = true
+      cancelLongPress()
+    }
+  }
+
+  function cancelLongPress() {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current)
+      longPressTimer.current = null
+    }
+  }
 
   return (
     <div
       onClick={() => setExpanded(e => !e)}
+      onContextMenu={handleContextMenu}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={cancelLongPress}
+      onTouchCancel={cancelLongPress}
       style={{
-        background: day.isPayday ? 'rgba(59,130,246,0.08)' : '#0f1923',
-        border: `1px solid ${day.isPayday ? '#3b82f6' : day.isPotNegative ? 'rgba(239,68,68,0.4)' : '#1e293b'}`,
+        background: day.isPayday ? `rgba(${theme === DARK ? '59,130,246' : '37,99,235'},0.08)` : theme.card,
+        border: `1px solid ${day.isPayday ? theme.blue : day.isPotNegative ? `${theme.red}66` : theme.border}`,
         borderRadius: 10,
         padding: '10px 12px',
         marginBottom: 6,
         cursor: 'pointer',
         userSelect: 'none',
         opacity: cardOpacity,
+        outline: hasOverride ? `2px solid ${theme.amber}` : 'none',
       }}
     >
       {/* Main row */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         {/* Date */}
         <div style={{ width: 52, flexShrink: 0 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: day.isSchoolHolidayWeekday ? '#f59e0b' : day.isWorkedWeekend ? '#fbbf24' : day.isRestDay ? '#334155' : '#f1f5f9' }}>{day.dayOfMonth}</div>
-          <div style={{ fontSize: 10, color: '#475569' }}>{dayOfWeekShort}</div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: day.isSchoolHolidayWeekday ? theme.amber : day.isWorkedWeekend ? theme.amber : day.isRestDay ? theme.textMuted : theme.textPrimary }}>{day.dayOfMonth}</div>
+          <div style={{ fontSize: 10, color: theme.textMuted }}>{dayOfWeekShort}</div>
         </div>
 
         {/* Pot balance */}
@@ -803,18 +1113,18 @@ function DayCard({ day, monthShort }: { day: DayData; monthShort: string }) {
           <div style={{ fontSize: 22, fontWeight: 800, color: potColor, fontVariantNumeric: 'tabular-nums', lineHeight: 1 }}>
             {day.billsPotAfter < 0 ? '-' : ''}{fmt(day.billsPotAfter)}
           </div>
-          <div style={{ fontSize: 10, color: '#475569', marginTop: 1 }}>bills pot</div>
+          <div style={{ fontSize: 10, color: theme.textMuted, marginTop: 1 }}>bills pot{hasOverride ? ' *' : ''}</div>
         </div>
 
         {/* IN / OUT */}
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
           {day.income > 0 && (
-            <div style={{ fontSize: 11, color: '#22c55e', fontVariantNumeric: 'tabular-nums' }}>
+            <div style={{ fontSize: 11, color: theme.green, fontVariantNumeric: 'tabular-nums' }}>
               +{fmt(day.income)}{day.afjIn > 0 ? ` +AFJ${fmt(day.afjIn)}` : ''}
             </div>
           )}
           {totalOut > 0 && (
-            <div style={{ fontSize: 11, color: '#ef4444', fontVariantNumeric: 'tabular-nums' }}>
+            <div style={{ fontSize: 11, color: theme.red, fontVariantNumeric: 'tabular-nums' }}>
               -{fmt(totalOut)}
             </div>
           )}
@@ -824,29 +1134,29 @@ function DayCard({ day, monthShort }: { day: DayData; monthShort: string }) {
         <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexShrink: 0 }}>
           {day.isPayday && (
             <span style={{
-              fontSize: 10, fontWeight: 700, color: '#3b82f6',
-              background: 'rgba(59,130,246,0.15)', borderRadius: 4, padding: '2px 5px'
+              fontSize: 10, fontWeight: 700, color: theme.blue,
+              background: `${theme.blue}26`, borderRadius: 4, padding: '2px 5px'
             }}>PAY</span>
           )}
           {day.isSchoolHolidayWeekday && (
             <span style={{
-              fontSize: 10, fontWeight: 600, color: '#f59e0b',
-              background: 'rgba(245,158,11,0.12)', borderRadius: 4, padding: '2px 5px'
+              fontSize: 10, fontWeight: 600, color: theme.amber,
+              background: `${theme.amber}1f`, borderRadius: 4, padding: '2px 5px'
             }}>HOL</span>
           )}
           {day.isWorkedWeekend && (
             <span style={{
-              fontSize: 10, fontWeight: 700, color: '#f59e0b',
-              background: 'rgba(245,158,11,0.15)', borderRadius: 4, padding: '2px 5px'
+              fontSize: 10, fontWeight: 700, color: theme.amber,
+              background: `${theme.amber}26`, borderRadius: 4, padding: '2px 5px'
             }}>WKD</span>
           )}
           {day.isRestDay && (
             <span style={{
-              fontSize: 10, fontWeight: 600, color: '#475569',
-              background: 'rgba(71,85,105,0.15)', borderRadius: 4, padding: '2px 5px'
+              fontSize: 10, fontWeight: 600, color: theme.textMuted,
+              background: `${theme.textMuted}26`, borderRadius: 4, padding: '2px 5px'
             }}>REST</span>
           )}
-          {day.carCost > 0 && <span style={{ color: '#94a3b8' }}><CarIcon size={12} /></span>}
+          {day.carCost > 0 && <span style={{ color: theme.textSecondary }}><CarIcon size={12} /></span>}
           <ChevronIcon down={!expanded} size={14} />
         </div>
       </div>
@@ -855,18 +1165,18 @@ function DayCard({ day, monthShort }: { day: DayData; monthShort: string }) {
       {day.isPayday && (
         <div style={{
           marginTop: 8, padding: '6px 10px',
-          background: 'rgba(59,130,246,0.12)', borderRadius: 6,
+          background: `${theme.blue}1f`, borderRadius: 6,
         }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontSize: 12, color: '#93c5fd' }}>AFJ received</span>
-            <span style={{ fontSize: 16, fontWeight: 700, color: '#3b82f6', fontVariantNumeric: 'tabular-nums' }}>
+            <span style={{ fontSize: 12, color: theme.blueLight }}>AFJ received</span>
+            <span style={{ fontSize: 16, fontWeight: 700, color: theme.blue, fontVariantNumeric: 'tabular-nums' }}>
               +{fmt(day.afjIn)}
             </span>
           </div>
           {day.ringFenceCarryIn > 0 && (
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
-              <span style={{ fontSize: 12, color: '#fbbf24' }}>Split carry-in</span>
-              <span style={{ fontSize: 14, fontWeight: 700, color: '#f59e0b', fontVariantNumeric: 'tabular-nums' }}>
+              <span style={{ fontSize: 12, color: theme.amber }}>Split carry-in</span>
+              <span style={{ fontSize: 14, fontWeight: 700, color: theme.amber, fontVariantNumeric: 'tabular-nums' }}>
                 +{fmtMoney(day.ringFenceCarryIn)}
               </span>
             </div>
@@ -876,35 +1186,35 @@ function DayCard({ day, monthShort }: { day: DayData; monthShort: string }) {
 
       {/* Expanded detail */}
       {expanded && (
-        <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid #1e293b' }}>
+        <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${theme.border}` }}>
 
           {/* Income section */}
           <div style={{ marginBottom: 8 }}>
-            <div style={{ fontSize: 11, color: '#475569', marginBottom: 4 }}>Income</div>
+            <div style={{ fontSize: 11, color: theme.textMuted, marginBottom: 4 }}>Income</div>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
-              <span style={{ color: '#94a3b8' }}>
+              <span style={{ color: theme.textSecondary }}>
                 {day.isSchoolHolidayWeekday ? 'School holiday' : day.isWorkedWeekend ? 'Worked weekend' : day.isRestDay ? 'Rest day' : 'Working day'}
               </span>
-              <span style={{ color: day.isRestDay ? '#475569' : '#22c55e', fontVariantNumeric: 'tabular-nums' }}>
+              <span style={{ color: day.isRestDay ? theme.textMuted : theme.green, fontVariantNumeric: 'tabular-nums' }}>
                 {day.isRestDay ? '£0' : `+${fmtMoney(day.income - day.extraIncomeToday.reduce((s, e) => s + e.amount, 0))}`}
               </span>
             </div>
             {day.afjIn > 0 && (
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginTop: 2 }}>
-                <span style={{ color: '#94a3b8' }}>AFJ</span>
-                <span style={{ color: '#3b82f6', fontVariantNumeric: 'tabular-nums' }}>+{fmtMoney(day.afjIn)}</span>
+                <span style={{ color: theme.textSecondary }}>AFJ</span>
+                <span style={{ color: theme.blue, fontVariantNumeric: 'tabular-nums' }}>+{fmtMoney(day.afjIn)}</span>
               </div>
             )}
             {day.ringFenceCarryIn > 0 && (
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginTop: 2 }}>
-                <span style={{ color: '#94a3b8' }}>Split carry-in</span>
-                <span style={{ color: '#f59e0b', fontVariantNumeric: 'tabular-nums' }}>+{fmtMoney(day.ringFenceCarryIn)}</span>
+                <span style={{ color: theme.textSecondary }}>Split carry-in</span>
+                <span style={{ color: theme.amber, fontVariantNumeric: 'tabular-nums' }}>+{fmtMoney(day.ringFenceCarryIn)}</span>
               </div>
             )}
             {day.extraIncomeToday.map((e, i) => (
               <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginTop: 2 }}>
-                <span style={{ color: '#94a3b8' }}>{e.name}</span>
-                <span style={{ color: '#22c55e', fontVariantNumeric: 'tabular-nums' }}>+{fmtMoney(e.amount)}</span>
+                <span style={{ color: theme.textSecondary }}>{e.name}</span>
+                <span style={{ color: theme.green, fontVariantNumeric: 'tabular-nums' }}>+{fmtMoney(e.amount)}</span>
               </div>
             ))}
           </div>
@@ -912,11 +1222,11 @@ function DayCard({ day, monthShort }: { day: DayData; monthShort: string }) {
           {/* Bills out section */}
           {day.billDetails.length > 0 && (
             <div style={{ marginBottom: 8 }}>
-              <div style={{ fontSize: 11, color: '#475569', marginBottom: 4 }}>Bills out</div>
+              <div style={{ fontSize: 11, color: theme.textMuted, marginBottom: 4 }}>Bills out</div>
               {day.billDetails.map((b, i) => (
                 <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 2 }}>
-                  <span style={{ color: '#94a3b8' }}>{b.name}</span>
-                  <span style={{ color: '#ef4444', fontVariantNumeric: 'tabular-nums' }}>-{fmtMoney(b.amount)}</span>
+                  <span style={{ color: theme.textSecondary }}>{b.name}</span>
+                  <span style={{ color: theme.red, fontVariantNumeric: 'tabular-nums' }}>-{fmtMoney(b.amount)}</span>
                 </div>
               ))}
             </div>
@@ -926,46 +1236,51 @@ function DayCard({ day, monthShort }: { day: DayData; monthShort: string }) {
           {day.carCost > 0 && (
             <div style={{ marginBottom: 8 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
-                <span style={{ color: '#94a3b8', display: 'flex', alignItems: 'center', gap: 4 }}>
+                <span style={{ color: theme.textSecondary, display: 'flex', alignItems: 'center', gap: 4 }}>
                   <CarIcon size={12} /> Car rent
                 </span>
-                <span style={{ color: '#ef4444', fontVariantNumeric: 'tabular-nums' }}>-{fmtMoney(day.carCost)}</span>
+                <span style={{ color: theme.red, fontVariantNumeric: 'tabular-nums' }}>-{fmtMoney(day.carCost)}</span>
               </div>
             </div>
           )}
 
           {/* Savings pot and Spending pot */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 8 }}>
-            <div style={{ background: '#080d14', borderRadius: 8, padding: '8px 10px' }}>
-              <div style={{ fontSize: 10, color: '#475569', marginBottom: 2 }}>Savings pot</div>
-              <div style={{ fontSize: 16, fontWeight: 700, color: '#a855f7', fontVariantNumeric: 'tabular-nums' }}>
+            <div style={{ background: theme.bg, borderRadius: 8, padding: '8px 10px' }}>
+              <div style={{ fontSize: 10, color: theme.textMuted, marginBottom: 2 }}>Savings pot</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: theme.purple, fontVariantNumeric: 'tabular-nums' }}>
                 {fmt(day.savingsPotAfter)}
               </div>
-              <div style={{ fontSize: 10, color: '#475569' }}>+{fmtMoney(day.savingsToday)} today</div>
+              <div style={{ fontSize: 10, color: theme.textMuted }}>+{fmtMoney(day.savingsToday)} today</div>
             </div>
-            <div style={{ background: '#080d14', borderRadius: 8, padding: '8px 10px' }}>
-              <div style={{ fontSize: 10, color: '#475569', marginBottom: 2 }}>Spending pot</div>
-              <div style={{ fontSize: 16, fontWeight: 700, color: day.spendingPotAfter >= 0 ? '#f1f5f9' : '#ef4444', fontVariantNumeric: 'tabular-nums' }}>
+            <div style={{ background: theme.bg, borderRadius: 8, padding: '8px 10px' }}>
+              <div style={{ fontSize: 10, color: theme.textMuted, marginBottom: 2 }}>Spending pot</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: day.spendingPotAfter >= 0 ? theme.textPrimary : theme.red, fontVariantNumeric: 'tabular-nums' }}>
                 {fmt(day.spendingPotAfter)}
               </div>
-              <div style={{ fontSize: 10, color: '#475569' }}>{day.spending >= 0 ? '+' : ''}{fmtMoney(day.spending)} today</div>
+              <div style={{ fontSize: 10, color: theme.textMuted }}>{day.spending >= 0 ? '+' : ''}{fmtMoney(day.spending)} today</div>
             </div>
           </div>
 
           {/* Day type label */}
           {day.isSchoolHolidayWeekday && day.holidayName && (
-            <div style={{ marginTop: 8, fontSize: 11, color: '#f59e0b' }}>
+            <div style={{ marginTop: 8, fontSize: 11, color: theme.amber }}>
               School holiday: {day.holidayName}
             </div>
           )}
           {day.isWorkedWeekend && (
-            <div style={{ marginTop: 8, fontSize: 11, color: '#fbbf24' }}>
+            <div style={{ marginTop: 8, fontSize: 11, color: theme.amber }}>
               Worked weekend · {fmt(day.weekendRate)}/day
             </div>
           )}
           {day.isRestDay && (
-            <div style={{ marginTop: 8, fontSize: 11, color: '#475569' }}>
+            <div style={{ marginTop: 8, fontSize: 11, color: theme.textMuted }}>
               Rest day — no income
+            </div>
+          )}
+          {hasOverride && (
+            <div style={{ marginTop: 8, fontSize: 11, color: theme.amber }}>
+              Balance manually set
             </div>
           )}
         </div>
@@ -982,8 +1297,6 @@ function DetailRow({ label, value, valueColor }: { label: string; value: string;
     </div>
   )
 }
-
-// ─── Bill Chip (kept for reference, not used in bills mode) ─────
 
 function cycleOrder(day: number): number {
   return day >= 8 ? day - 8 : day + 24
@@ -1007,12 +1320,14 @@ function BillContextMenu({
   onHide,
   onShow,
   onEdit,
+  theme,
 }: {
   menu: ContextMenuState
   onClose: () => void
   onHide: (id: string) => void
   onShow: (id: string) => void
   onEdit: (id: string) => void
+  theme: ThemeTokens
 }) {
   const menuRef = useRef<HTMLDivElement>(null)
 
@@ -1035,7 +1350,7 @@ function BillContextMenu({
 
   const menuItemStyle: React.CSSProperties = {
     display: 'block', width: '100%', textAlign: 'left',
-    background: 'transparent', border: 'none', color: '#f1f5f9',
+    background: 'transparent', border: 'none', color: theme.textPrimary,
     fontSize: 14, padding: '12px 16px', cursor: 'pointer',
     fontFamily: 'inherit', minHeight: 44,
     borderRadius: 6,
@@ -1049,10 +1364,10 @@ function BillContextMenu({
         top: Math.min(menu.y, window.innerHeight - 130),
         left: Math.min(menu.x, window.innerWidth - 180),
         zIndex: 500,
-        background: '#1e293b',
-        border: '1px solid #334155',
+        background: theme.borderStrong,
+        border: `1px solid ${theme.border}`,
         borderRadius: 10,
-        boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
+        boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
         minWidth: 170,
         overflow: 'hidden',
       }}
@@ -1061,34 +1376,34 @@ function BillContextMenu({
         <button
           style={menuItemStyle}
           onClick={() => { onShow(menu.billId); onClose() }}
-          onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.06)')}
+          onMouseEnter={e => (e.currentTarget.style.background = theme.cardHover)}
           onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
         >
           Show bill
         </button>
       ) : (
         <button
-          style={{ ...menuItemStyle, color: '#94a3b8' }}
+          style={{ ...menuItemStyle, color: theme.textSecondary }}
           onClick={() => { onHide(menu.billId); onClose() }}
-          onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.06)')}
+          onMouseEnter={e => (e.currentTarget.style.background = theme.cardHover)}
           onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
         >
           Hide bill
         </button>
       )}
-      <div style={{ borderTop: '1px solid #334155' }} />
+      <div style={{ borderTop: `1px solid ${theme.border}` }} />
       {menu.isCustom ? (
         <button
           style={menuItemStyle}
           onClick={() => { onEdit(menu.billId); onClose() }}
-          onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.06)')}
+          onMouseEnter={e => (e.currentTarget.style.background = theme.cardHover)}
           onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
         >
           Edit bill
         </button>
       ) : (
         <button
-          style={{ ...menuItemStyle, color: '#334155', cursor: 'not-allowed' }}
+          style={{ ...menuItemStyle, color: theme.textMuted, cursor: 'not-allowed' }}
           disabled
         >
           Edit bill (static)
@@ -1106,12 +1421,14 @@ function DraggableBillRow({
   isHidden,
   isCustom,
   onContextMenu,
+  theme,
 }: {
   bill: Bill
   amount: number
   isHidden: boolean
   isCustom: boolean
   onContextMenu: (menu: ContextMenuState) => void
+  theme: ThemeTokens
 }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: bill.id,
@@ -1180,18 +1497,18 @@ function DraggableBillRow({
         <span
           {...attributes}
           {...listeners}
-          style={{ color: '#334155', display: 'flex', alignItems: 'center', touchAction: 'none', flexShrink: 0 }}
+          style={{ color: theme.textMuted, display: 'flex', alignItems: 'center', touchAction: 'none', flexShrink: 0 }}
         >
           <DragHandleIcon size={14} />
         </span>
       ) : (
-        <span style={{ color: '#334155', display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+        <span style={{ color: theme.textMuted, display: 'flex', alignItems: 'center', flexShrink: 0 }}>
           <LockIcon size={12} />
         </span>
       )}
       <span style={{
         fontSize: 12,
-        color: bill.moveable ? '#94a3b8' : '#475569',
+        color: bill.moveable ? theme.textSecondary : theme.textMuted,
         flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
         textDecoration: isHidden ? 'line-through' : 'none',
       }}>
@@ -1199,13 +1516,13 @@ function DraggableBillRow({
       </span>
       {isHidden && (
         <span style={{
-          fontSize: 9, fontWeight: 700, color: '#475569',
-          background: 'rgba(71,85,105,0.2)', borderRadius: 4, padding: '1px 4px', flexShrink: 0,
+          fontSize: 9, fontWeight: 700, color: theme.textMuted,
+          background: `${theme.textMuted}33`, borderRadius: 4, padding: '1px 4px', flexShrink: 0,
         }}>
           HIDDEN
         </span>
       )}
-      <span style={{ fontSize: 12, color: isHidden ? '#475569' : '#ef4444', fontVariantNumeric: 'tabular-nums', flexShrink: 0, textDecoration: isHidden ? 'line-through' : 'none' }}>
+      <span style={{ fontSize: 12, color: isHidden ? theme.textMuted : theme.red, fontVariantNumeric: 'tabular-nums', flexShrink: 0, textDecoration: isHidden ? 'line-through' : 'none' }}>
         -{fmtMoney(amount)}
       </span>
     </div>
@@ -1222,6 +1539,7 @@ function DroppableDayRow({
   hiddenBillIds,
   customBillIds,
   onBillContextMenu,
+  theme,
 }: {
   dayData: DayData
   bills: Bill[]
@@ -1230,10 +1548,11 @@ function DroppableDayRow({
   hiddenBillIds: Set<string>
   customBillIds: Set<string>
   onBillContextMenu: (menu: ContextMenuState) => void
+  theme: ThemeTokens
 }) {
   const { setNodeRef } = useDroppable({ id: `day-${dayData.dayOfMonth}-${dayData.date.getMonth()}` })
 
-  const potColor = dayData.billsPotAfter >= 0 ? '#22c55e' : '#ef4444'
+  const potColor = dayData.billsPotAfter >= 0 ? theme.green : theme.red
   const dayOfWeekShort = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][dayData.dayOfWeek]
   const totalOutToday = dayData.billsDue + dayData.carCost + dayData.fuelCost
   const inAmt = dayData.income + (dayData.isPayday ? dayData.afjIn + dayData.ringFenceCarryIn : 0)
@@ -1253,8 +1572,8 @@ function DroppableDayRow({
         ref={setNodeRef}
         style={{
           flex: 1,
-          background: isOver ? 'rgba(59,130,246,0.08)' : '#0f1923',
-          border: `1px solid ${isOver ? 'rgba(59,130,246,0.4)' : '#1e293b'}`,
+          background: isOver ? `${theme.blue}14` : theme.card,
+          border: `1px solid ${isOver ? `${theme.blue}66` : theme.border}`,
           borderRadius: 8,
           padding: '6px 10px',
           transition: 'background 0.15s, border-color 0.15s',
@@ -1263,19 +1582,19 @@ function DroppableDayRow({
       >
         {/* Day header */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: bills.length > 0 ? 4 : 0 }}>
-          <span style={{ fontSize: 12, fontWeight: 700, color: dayData.isSchoolHolidayWeekday ? '#f59e0b' : dayData.isWorkedWeekend ? '#fbbf24' : dayData.isRestDay ? '#334155' : '#94a3b8', minWidth: 22 }}>{dayData.dayOfMonth}</span>
-          <span style={{ fontSize: 10, color: '#334155' }}>{dayOfWeekShort}</span>
+          <span style={{ fontSize: 12, fontWeight: 700, color: dayData.isSchoolHolidayWeekday ? theme.amber : dayData.isWorkedWeekend ? theme.amber : dayData.isRestDay ? theme.textMuted : theme.textSecondary, minWidth: 22 }}>{dayData.dayOfMonth}</span>
+          <span style={{ fontSize: 10, color: theme.textMuted }}>{dayOfWeekShort}</span>
           {dayData.isSchoolHolidayWeekday && (
-            <span style={{ fontSize: 10, color: '#f59e0b', background: 'rgba(245,158,11,0.1)', borderRadius: 4, padding: '1px 4px' }}>HOL</span>
+            <span style={{ fontSize: 10, color: theme.amber, background: `${theme.amber}1a`, borderRadius: 4, padding: '1px 4px' }}>HOL</span>
           )}
           {dayData.isWorkedWeekend && (
-            <span style={{ fontSize: 10, color: '#fbbf24', background: 'rgba(245,158,11,0.12)', borderRadius: 4, padding: '1px 4px' }}>WKD</span>
+            <span style={{ fontSize: 10, color: theme.amber, background: `${theme.amber}1f`, borderRadius: 4, padding: '1px 4px' }}>WKD</span>
           )}
           {dayData.isRestDay && (
-            <span style={{ fontSize: 10, color: '#475569', background: 'rgba(71,85,105,0.12)', borderRadius: 4, padding: '1px 4px' }}>REST</span>
+            <span style={{ fontSize: 10, color: theme.textMuted, background: `${theme.textMuted}1f`, borderRadius: 4, padding: '1px 4px' }}>REST</span>
           )}
           {dayData.isPayday && (
-            <span style={{ fontSize: 10, color: '#3b82f6', background: 'rgba(59,130,246,0.12)', borderRadius: 4, padding: '1px 4px' }}>PAY</span>
+            <span style={{ fontSize: 10, color: theme.blue, background: `${theme.blue}1f`, borderRadius: 4, padding: '1px 4px' }}>PAY</span>
           )}
         </div>
 
@@ -1288,24 +1607,25 @@ function DroppableDayRow({
             isHidden={hiddenBillIds.has(bill.id)}
             isCustom={customBillIds.has(bill.id)}
             onContextMenu={onBillContextMenu}
+            theme={theme}
           />
         ))}
 
         {/* Car rent row if applicable */}
         {dayData.carCost > 0 && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 0' }}>
-            <span style={{ color: '#334155', display: 'flex', alignItems: 'center', flexShrink: 0 }}><LockIcon size={12} /></span>
-            <span style={{ fontSize: 12, color: '#475569', flex: 1 }}>Car rent</span>
-            <span style={{ fontSize: 12, color: '#ef4444', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>-{fmtMoney(dayData.carCost)}</span>
+            <span style={{ color: theme.textMuted, display: 'flex', alignItems: 'center', flexShrink: 0 }}><LockIcon size={12} /></span>
+            <span style={{ fontSize: 12, color: theme.textMuted, flex: 1 }}>Car rent</span>
+            <span style={{ fontSize: 12, color: theme.red, fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>-{fmtMoney(dayData.carCost)}</span>
           </div>
         )}
 
         {/* Fuel row if applicable */}
         {dayData.fuelCost > 0 && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 0' }}>
-            <span style={{ color: '#334155', display: 'flex', alignItems: 'center', flexShrink: 0 }}><LockIcon size={12} /></span>
-            <span style={{ fontSize: 12, color: '#475569', flex: 1 }}>Fuel fill</span>
-            <span style={{ fontSize: 12, color: '#ef4444', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>-{fmtMoney(dayData.fuelCost)}</span>
+            <span style={{ color: theme.textMuted, display: 'flex', alignItems: 'center', flexShrink: 0 }}><LockIcon size={12} /></span>
+            <span style={{ fontSize: 12, color: theme.textMuted, flex: 1 }}>Fuel fill</span>
+            <span style={{ fontSize: 12, color: theme.red, fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>-{fmtMoney(dayData.fuelCost)}</span>
           </div>
         )}
       </div>
@@ -1315,8 +1635,8 @@ function DroppableDayRow({
         style={{
           width: 82,
           flexShrink: 0,
-          background: '#0f1923',
-          border: `1px solid ${dayData.isPotNegative ? 'rgba(239,68,68,0.3)' : '#1e293b'}`,
+          background: theme.card,
+          border: `1px solid ${dayData.isPotNegative ? `${theme.red}4d` : theme.border}`,
           borderRadius: 8,
           padding: '6px 8px',
           display: 'flex',
@@ -1328,10 +1648,10 @@ function DroppableDayRow({
         <div style={{ fontSize: 14, fontWeight: 800, color: potColor, fontVariantNumeric: 'tabular-nums', lineHeight: 1.1 }}>
           {dayData.billsPotAfter < 0 ? '-' : ''}{fmt(dayData.billsPotAfter)}
         </div>
-        <div style={{ fontSize: 9, color: '#475569', marginTop: 3, fontVariantNumeric: 'tabular-nums' }}>
+        <div style={{ fontSize: 9, color: theme.textMuted, marginTop: 3, fontVariantNumeric: 'tabular-nums' }}>
           In {fmt(inAmt)}
         </div>
-        <div style={{ fontSize: 9, color: '#475569', fontVariantNumeric: 'tabular-nums' }}>
+        <div style={{ fontSize: 9, color: theme.textMuted, fontVariantNumeric: 'tabular-nums' }}>
           Out {fmt(totalOutToday)}
         </div>
       </div>
@@ -1345,10 +1665,12 @@ function SettingsPanel({
   settings,
   onSave,
   onClose,
+  theme,
 }: {
   settings: Settings
   onSave: (s: Settings) => void
   onClose: () => void
+  theme: ThemeTokens
 }) {
   const [local, setLocal] = useState<Settings>(JSON.parse(JSON.stringify(settings)))
   const [modal, setModal] = useState<CarChangeModalState>({
@@ -1423,38 +1745,38 @@ function SettingsPanel({
   }
 
   const fieldStyle: React.CSSProperties = {
-    background: '#0a111a', border: '1px solid #1e293b', borderRadius: 8,
-    color: '#f1f5f9', padding: '8px 12px', fontSize: 14, width: '100%', outline: 'none',
+    background: theme.bg, border: `1px solid ${theme.border}`, borderRadius: 8,
+    color: theme.textPrimary, padding: '8px 12px', fontSize: 14, width: '100%', outline: 'none',
     fontFamily: 'inherit',
   }
 
-  const labelStyle: React.CSSProperties = { fontSize: 12, color: '#475569', marginBottom: 4, display: 'block' }
+  const labelStyle: React.CSSProperties = { fontSize: 12, color: theme.textMuted, marginBottom: 4, display: 'block' }
 
   return (
     <div style={{
       position: 'fixed', inset: 0, zIndex: 200,
-      background: '#080d14', overflowY: 'auto',
+      background: theme.bg, overflowY: 'auto',
       display: 'flex', flexDirection: 'column',
     }}>
       {/* Header */}
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '16px 20px', borderBottom: '1px solid #1e293b', position: 'sticky', top: 0,
-        background: '#080d14', zIndex: 10,
+        padding: '16px 20px', borderBottom: `1px solid ${theme.border}`, position: 'sticky', top: 0,
+        background: theme.bg, zIndex: 10,
       }}>
-        <span style={{ fontSize: 18, fontWeight: 700, color: '#f1f5f9' }}>Settings</span>
+        <span style={{ fontSize: 18, fontWeight: 700, color: theme.textPrimary }}>Settings</span>
         <div style={{ display: 'flex', gap: 10 }}>
           <button
             onClick={() => { onSave(local); onClose() }}
             style={{
-              background: '#22c55e', color: '#fff', border: 'none', borderRadius: 8,
+              background: theme.green, color: '#fff', border: 'none', borderRadius: 8,
               padding: '8px 18px', fontSize: 14, fontWeight: 600, cursor: 'pointer',
             }}
           >Save</button>
           <button
             onClick={onClose}
             style={{
-              background: 'transparent', color: '#94a3b8', border: '1px solid #1e293b',
+              background: 'transparent', color: theme.textSecondary, border: `1px solid ${theme.border}`,
               borderRadius: 8, padding: '8px 12px', cursor: 'pointer',
             }}
           ><CloseIcon size={18} /></button>
@@ -1463,9 +1785,39 @@ function SettingsPanel({
 
       <div style={{ padding: '20px', maxWidth: 600, width: '100%', margin: '0 auto' }}>
 
+        {/* Dark mode toggle */}
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: theme.blueLight, marginBottom: 12 }}>Appearance</div>
+          <div style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            background: theme.card, border: `1px solid ${theme.border}`, borderRadius: 10,
+            padding: '12px 16px',
+          }}>
+            <span style={{ fontSize: 14, color: theme.textPrimary }}>Dark mode</span>
+            <button
+              onClick={() => setLocal(prev => ({ ...prev, darkMode: !prev.darkMode }))}
+              style={{
+                width: 44, height: 24, borderRadius: 12,
+                background: local.darkMode ? theme.blue : theme.border,
+                border: 'none', cursor: 'pointer', position: 'relative',
+                transition: 'background 0.2s ease', flexShrink: 0,
+              }}
+            >
+              <span style={{
+                position: 'absolute', top: 3, left: local.darkMode ? 23 : 3,
+                width: 18, height: 18, borderRadius: '50%',
+                background: '#fff',
+                transition: 'left 0.2s ease',
+                boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+                display: 'block',
+              }} />
+            </button>
+          </div>
+        </div>
+
         {/* AFJ Daily Rate */}
         <div style={{ marginBottom: 24 }}>
-          <div style={{ fontSize: 14, fontWeight: 600, color: '#93c5fd', marginBottom: 12 }}>AFJ daily rate</div>
+          <div style={{ fontSize: 14, fontWeight: 600, color: theme.blueLight, marginBottom: 12 }}>AFJ daily rate</div>
           <div>
             <label style={labelStyle}>AFJ daily rate (£)</label>
             <input
@@ -1479,7 +1831,7 @@ function SettingsPanel({
 
         {/* Current car */}
         <div style={{ marginBottom: 24 }}>
-          <div style={{ fontSize: 14, fontWeight: 600, color: '#93c5fd', marginBottom: 12 }}>Current car (Apr 2026)</div>
+          <div style={{ fontSize: 14, fontWeight: 600, color: theme.blueLight, marginBottom: 12 }}>Current car (Apr 2026)</div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             {[
               { label: 'Weekly rent (£)', field: 'carWeeklyRent' as const },
@@ -1503,13 +1855,13 @@ function SettingsPanel({
         {/* Car changes */}
         <div style={{ marginBottom: 24 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-            <span style={{ fontSize: 14, fontWeight: 600, color: '#93c5fd' }}>Car changes</span>
+            <span style={{ fontSize: 14, fontWeight: 600, color: theme.blueLight }}>Car changes</span>
             <button
               onClick={openAddCarModal}
               style={{
                 display: 'flex', alignItems: 'center', gap: 6,
-                background: 'rgba(59,130,246,0.1)', border: '1px solid rgba(59,130,246,0.3)',
-                color: '#93c5fd', borderRadius: 8, padding: '6px 12px', fontSize: 12, cursor: 'pointer',
+                background: `${theme.blue}1a`, border: `1px solid ${theme.blue}4d`,
+                color: theme.blueLight, borderRadius: 8, padding: '6px 12px', fontSize: 12, cursor: 'pointer',
               }}
             >
               <PlusIcon size={14} /> Add change
@@ -1517,28 +1869,28 @@ function SettingsPanel({
           </div>
 
           {local.carChanges.length === 0 && (
-            <div style={{ fontSize: 13, color: '#475569', padding: '12px', background: '#0f1923', borderRadius: 8 }}>
+            <div style={{ fontSize: 13, color: theme.textMuted, padding: '12px', background: theme.card, borderRadius: 8 }}>
               No changes configured
             </div>
           )}
 
           {local.carChanges.map((c, i) => (
             <div key={i} style={{
-              background: '#0f1923', border: '1px solid #1e293b', borderRadius: 10,
+              background: theme.card, border: `1px solid ${theme.border}`, borderRadius: 10,
               padding: '12px 14px', marginBottom: 8,
               display: 'flex', justifyContent: 'space-between', alignItems: 'center',
             }}>
               <div>
-                <div style={{ fontSize: 13, color: '#f1f5f9', fontWeight: 600, marginBottom: 4 }}>
+                <div style={{ fontSize: 13, color: theme.textPrimary, fontWeight: 600, marginBottom: 4 }}>
                   From {MONTH_SHORT[c.fromMonth - 1]} {c.fromYear}
                 </div>
-                <div style={{ fontSize: 12, color: '#475569' }}>
+                <div style={{ fontSize: 12, color: theme.textMuted }}>
                   £{c.carWeeklyRent}/wk · fill every {c.fillEveryDays}d · {fmt(c.tankPrice)} tank
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
-                <button onClick={() => openEditCarModal(i)} style={{ background: '#1e293b', border: 'none', color: '#94a3b8', borderRadius: 6, padding: '5px 10px', fontSize: 12, cursor: 'pointer' }}>Edit</button>
-                <button onClick={() => removeCarChange(i)} style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: '#ef4444', borderRadius: 6, padding: '5px 10px', fontSize: 12, cursor: 'pointer' }}>Remove</button>
+                <button onClick={() => openEditCarModal(i)} style={{ background: theme.border, border: 'none', color: theme.textSecondary, borderRadius: 6, padding: '5px 10px', fontSize: 12, cursor: 'pointer' }}>Edit</button>
+                <button onClick={() => removeCarChange(i)} style={{ background: `${theme.red}1a`, border: `1px solid ${theme.red}4d`, color: theme.red, borderRadius: 6, padding: '5px 10px', fontSize: 12, cursor: 'pointer' }}>Remove</button>
               </div>
             </div>
           ))}
@@ -1547,13 +1899,13 @@ function SettingsPanel({
         {/* Extra Fixed Incomes */}
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-            <span style={{ fontSize: 14, fontWeight: 600, color: '#93c5fd' }}>Extra fixed incomes</span>
+            <span style={{ fontSize: 14, fontWeight: 600, color: theme.blueLight }}>Extra fixed incomes</span>
             <button
               onClick={openAddExtraIncome}
               style={{
                 display: 'flex', alignItems: 'center', gap: 6,
-                background: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.3)',
-                color: '#22c55e', borderRadius: 8, padding: '6px 12px', fontSize: 12, cursor: 'pointer',
+                background: `${theme.green}1a`, border: `1px solid ${theme.green}4d`,
+                color: theme.green, borderRadius: 8, padding: '6px 12px', fontSize: 12, cursor: 'pointer',
               }}
             >
               <PlusIcon size={14} /> Add income
@@ -1561,28 +1913,28 @@ function SettingsPanel({
           </div>
 
           {local.extraIncomes.length === 0 && (
-            <div style={{ fontSize: 13, color: '#475569', padding: '12px', background: '#0f1923', borderRadius: 8 }}>
+            <div style={{ fontSize: 13, color: theme.textMuted, padding: '12px', background: theme.card, borderRadius: 8 }}>
               No extra incomes configured
             </div>
           )}
 
           {local.extraIncomes.map((e, i) => (
             <div key={e.id} style={{
-              background: '#0f1923', border: '1px solid #1e293b', borderRadius: 10,
+              background: theme.card, border: `1px solid ${theme.border}`, borderRadius: 10,
               padding: '12px 14px', marginBottom: 8,
               display: 'flex', justifyContent: 'space-between', alignItems: 'center',
             }}>
               <div>
-                <div style={{ fontSize: 13, color: '#f1f5f9', fontWeight: 600, marginBottom: 4 }}>
+                <div style={{ fontSize: 13, color: theme.textPrimary, fontWeight: 600, marginBottom: 4 }}>
                   {e.name}
                 </div>
-                <div style={{ fontSize: 12, color: '#475569' }}>
+                <div style={{ fontSize: 12, color: theme.textMuted }}>
                   {fmtMoney(e.amount)} on day {e.day} of each month
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
-                <button onClick={() => openEditExtraIncome(i)} style={{ background: '#1e293b', border: 'none', color: '#94a3b8', borderRadius: 6, padding: '5px 10px', fontSize: 12, cursor: 'pointer' }}>Edit</button>
-                <button onClick={() => removeExtraIncome(i)} style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: '#ef4444', borderRadius: 6, padding: '5px 10px', fontSize: 12, cursor: 'pointer' }}>Remove</button>
+                <button onClick={() => openEditExtraIncome(i)} style={{ background: theme.border, border: 'none', color: theme.textSecondary, borderRadius: 6, padding: '5px 10px', fontSize: 12, cursor: 'pointer' }}>Edit</button>
+                <button onClick={() => removeExtraIncome(i)} style={{ background: `${theme.red}1a`, border: `1px solid ${theme.red}4d`, color: theme.red, borderRadius: 6, padding: '5px 10px', fontSize: 12, cursor: 'pointer' }}>Remove</button>
               </div>
             </div>
           ))}
@@ -1592,11 +1944,11 @@ function SettingsPanel({
       {/* Car change modal */}
       {modal.open && (
         <div style={{
-          position: 'fixed', inset: 0, zIndex: 300, background: 'rgba(0,0,0,0.8)',
+          position: 'fixed', inset: 0, zIndex: 300, background: theme.overlay,
           display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
         }}>
-          <div style={{ background: '#0f1923', border: '1px solid #1e293b', borderRadius: 16, padding: 24, width: '100%', maxWidth: 400 }}>
-            <div style={{ fontSize: 16, fontWeight: 700, color: '#f1f5f9', marginBottom: 16 }}>
+          <div style={{ background: theme.card, border: `1px solid ${theme.border}`, borderRadius: 16, padding: 24, width: '100%', maxWidth: 400 }}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: theme.textPrimary, marginBottom: 16 }}>
               {modal.editIndex !== null ? 'Edit car change' : 'Add car change'}
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
@@ -1626,10 +1978,10 @@ function SettingsPanel({
               </div>
             </div>
             <div style={{ display: 'flex', gap: 10 }}>
-              <button onClick={saveCarChange} style={{ flex: 1, background: '#22c55e', color: '#fff', border: 'none', borderRadius: 8, padding: '10px', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>
+              <button onClick={saveCarChange} style={{ flex: 1, background: theme.green, color: '#fff', border: 'none', borderRadius: 8, padding: '10px', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>
                 {modal.editIndex !== null ? 'Save' : 'Add'}
               </button>
-              <button onClick={() => setModal(m => ({ ...m, open: false }))} style={{ flex: 1, background: '#1e293b', color: '#94a3b8', border: 'none', borderRadius: 8, padding: '10px', fontSize: 14, cursor: 'pointer' }}>
+              <button onClick={() => setModal(m => ({ ...m, open: false }))} style={{ flex: 1, background: theme.border, color: theme.textSecondary, border: 'none', borderRadius: 8, padding: '10px', fontSize: 14, cursor: 'pointer' }}>
                 Cancel
               </button>
             </div>
@@ -1640,11 +1992,11 @@ function SettingsPanel({
       {/* Extra income modal */}
       {extraModal.open && (
         <div style={{
-          position: 'fixed', inset: 0, zIndex: 300, background: 'rgba(0,0,0,0.8)',
+          position: 'fixed', inset: 0, zIndex: 300, background: theme.overlay,
           display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
         }}>
-          <div style={{ background: '#0f1923', border: '1px solid #1e293b', borderRadius: 16, padding: 24, width: '100%', maxWidth: 360 }}>
-            <div style={{ fontSize: 16, fontWeight: 700, color: '#f1f5f9', marginBottom: 16 }}>
+          <div style={{ background: theme.card, border: `1px solid ${theme.border}`, borderRadius: 16, padding: 24, width: '100%', maxWidth: 360 }}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: theme.textPrimary, marginBottom: 16 }}>
               {extraModal.editIndex !== null ? 'Edit income' : 'Add income'}
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 16 }}>
@@ -1683,11 +2035,11 @@ function SettingsPanel({
               <button
                 onClick={saveExtraIncome}
                 disabled={!extraModal.name.trim() || extraModal.amount <= 0}
-                style={{ flex: 1, background: extraModal.name.trim() && extraModal.amount > 0 ? '#22c55e' : '#1e293b', color: '#fff', border: 'none', borderRadius: 8, padding: '10px', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}
+                style={{ flex: 1, background: extraModal.name.trim() && extraModal.amount > 0 ? theme.green : theme.border, color: '#fff', border: 'none', borderRadius: 8, padding: '10px', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}
               >
                 {extraModal.editIndex !== null ? 'Save' : 'Add'}
               </button>
-              <button onClick={() => setExtraModal(m => ({ ...m, open: false }))} style={{ flex: 1, background: '#1e293b', color: '#94a3b8', border: 'none', borderRadius: 8, padding: '10px', fontSize: 14, cursor: 'pointer' }}>
+              <button onClick={() => setExtraModal(m => ({ ...m, open: false }))} style={{ flex: 1, background: theme.border, color: theme.textSecondary, border: 'none', borderRadius: 8, padding: '10px', fontSize: 14, cursor: 'pointer' }}>
                 Cancel
               </button>
             </div>
@@ -1701,7 +2053,6 @@ function SettingsPanel({
 // ─── Weekends Accordion ─────────────────────────────────────────
 
 function getWeekendDatesInCycle(month: number, year: number): { dom: number; dayName: 'Sat' | 'Sun'; fullDate: Date }[] {
-  // Cycle: 8th of month → 7th of next month
   const results: { dom: number; dayName: 'Sat' | 'Sun'; fullDate: Date }[] = []
   const nextMonth = month === 12 ? 1 : month + 1
   const nextYear = month === 12 ? year + 1 : year
@@ -1734,6 +2085,7 @@ function WeekendsAccordion({
   onRateChange,
   onBillsPerDayChange,
   onSavingsChange,
+  theme,
 }: {
   open: boolean
   onToggle: () => void
@@ -1744,6 +2096,7 @@ function WeekendsAccordion({
   onRateChange: (v: number) => void
   onBillsPerDayChange: (v: number) => void
   onSavingsChange: (v: number) => void
+  theme: ThemeTokens
 }) {
   const weekendDates = getWeekendDatesInCycle(month, year)
   const workedCount = wkdState.workedDays.length
@@ -1753,7 +2106,7 @@ function WeekendsAccordion({
 
   return (
     <div style={{
-      background: '#0f1923', border: '1px solid #1e293b', borderRadius: 12,
+      background: theme.card, border: `1px solid ${theme.border}`, borderRadius: 12,
       marginBottom: 10, overflow: 'hidden',
     }}>
       <button
@@ -1761,12 +2114,12 @@ function WeekendsAccordion({
         style={{
           width: '100%', background: 'transparent', border: 'none',
           padding: '12px 16px', display: 'flex', justifyContent: 'space-between',
-          alignItems: 'center', cursor: 'pointer', color: '#f1f5f9',
+          alignItems: 'center', cursor: 'pointer', color: theme.textPrimary,
         }}
       >
         <span style={{ fontSize: 13, fontWeight: 600 }}>Weekends</span>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 12, color: '#475569' }}>
+          <span style={{ fontSize: 12, color: theme.textMuted }}>
             {workedCount > 0 ? `${workedCount} worked · ${fmt(wkdState.weekendRate)}/d` : `${weekendDates.length} days · static`}
           </span>
           <ChevronIcon down={!open} size={16} />
@@ -1785,22 +2138,22 @@ function WeekendsAccordion({
                   onClick={() => onToggleDay(dom)}
                   style={{
                     width: 64, padding: '6px 4px', borderRadius: 10, textAlign: 'center',
-                    background: isWorked ? 'rgba(245,158,11,0.15)' : '#0f1923',
-                    border: `1px solid ${isWorked ? '#f59e0b' : '#1e293b'}`,
+                    background: isWorked ? `${theme.amber}26` : theme.card,
+                    border: `1px solid ${isWorked ? theme.amber : theme.border}`,
                     cursor: 'pointer',
                     userSelect: 'none',
                     transition: 'all 0.15s ease',
                   }}
                 >
-                  <div style={{ fontSize: 10, color: isWorked ? '#f59e0b' : '#475569', fontWeight: 600 }}>{dayName}</div>
-                  <div style={{ fontSize: 18, fontWeight: 700, color: isWorked ? '#fbbf24' : '#334155' }}>{dom}</div>
+                  <div style={{ fontSize: 10, color: isWorked ? theme.amber : theme.textMuted, fontWeight: 600 }}>{dayName}</div>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: isWorked ? theme.amber : theme.textMuted }}>{dom}</div>
                 </div>
               )
             })}
           </div>
 
           {workedCount === 0 && (
-            <div style={{ fontSize: 12, color: '#334155', marginBottom: 12, padding: '8px 10px', background: '#080d14', borderRadius: 8 }}>
+            <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 12, padding: '8px 10px', background: theme.bg, borderRadius: 8 }}>
               No weekends toggled — pot stays static through weekends (no bills-per-day added)
             </div>
           )}
@@ -1808,8 +2161,8 @@ function WeekendsAccordion({
           {/* Weekend rate slider */}
           <div style={{ marginBottom: 14 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-              <span style={{ fontSize: 13, color: workedCount > 0 ? '#94a3b8' : '#334155' }}>Weekend day rate</span>
-              <span style={{ fontSize: 18, fontWeight: 700, color: workedCount > 0 ? '#fbbf24' : '#334155', fontVariantNumeric: 'tabular-nums' }}>
+              <span style={{ fontSize: 13, color: workedCount > 0 ? theme.textSecondary : theme.textMuted }}>Weekend day rate</span>
+              <span style={{ fontSize: 18, fontWeight: 700, color: workedCount > 0 ? theme.amber : theme.textMuted, fontVariantNumeric: 'tabular-nums' }}>
                 {fmt(wkdState.weekendRate)}
               </span>
             </div>
@@ -1821,7 +2174,7 @@ function WeekendsAccordion({
               onChange={e => onRateChange(Number(e.target.value))}
               style={{
                 width: '100%',
-                background: workedCount > 0 ? `linear-gradient(to right, #f59e0b ${pct}%, #1e293b ${pct}%)` : '#1e293b',
+                background: workedCount > 0 ? `linear-gradient(to right, ${theme.amber} ${pct}%, ${theme.sliderTrack} ${pct}%)` : theme.sliderTrack,
               }}
             />
           </div>
@@ -1829,8 +2182,8 @@ function WeekendsAccordion({
           {/* Bills pot per day slider */}
           <div style={{ marginBottom: 14 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-              <span style={{ fontSize: 13, color: workedCount > 0 ? '#94a3b8' : '#334155' }}>Bills pot per day (worked wkd)</span>
-              <span style={{ fontSize: 18, fontWeight: 700, color: workedCount > 0 ? '#3b82f6' : '#334155', fontVariantNumeric: 'tabular-nums' }}>
+              <span style={{ fontSize: 13, color: workedCount > 0 ? theme.textSecondary : theme.textMuted }}>Bills pot per day (worked wkd)</span>
+              <span style={{ fontSize: 18, fontWeight: 700, color: workedCount > 0 ? theme.blue : theme.textMuted, fontVariantNumeric: 'tabular-nums' }}>
                 {fmt(wkdState.weekendBillsPerDay)}
               </span>
             </div>
@@ -1842,7 +2195,7 @@ function WeekendsAccordion({
               onChange={e => onBillsPerDayChange(Number(e.target.value))}
               style={{
                 width: '100%',
-                background: workedCount > 0 ? `linear-gradient(to right, #3b82f6 ${billsPct}%, #1e293b ${billsPct}%)` : '#1e293b',
+                background: workedCount > 0 ? `linear-gradient(to right, ${theme.blue} ${billsPct}%, ${theme.sliderTrack} ${billsPct}%)` : theme.sliderTrack,
               }}
             />
           </div>
@@ -1850,8 +2203,8 @@ function WeekendsAccordion({
           {/* Savings per day slider */}
           <div style={{ marginBottom: 0 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-              <span style={{ fontSize: 13, color: workedCount > 0 ? '#94a3b8' : '#334155' }}>Savings (worked wkd)</span>
-              <span style={{ fontSize: 18, fontWeight: 700, color: workedCount > 0 ? '#a855f7' : '#334155', fontVariantNumeric: 'tabular-nums' }}>
+              <span style={{ fontSize: 13, color: workedCount > 0 ? theme.textSecondary : theme.textMuted }}>Savings (worked wkd)</span>
+              <span style={{ fontSize: 18, fontWeight: 700, color: workedCount > 0 ? theme.purple : theme.textMuted, fontVariantNumeric: 'tabular-nums' }}>
                 {fmt(wkdState.weekendSavings)}
               </span>
             </div>
@@ -1863,7 +2216,7 @@ function WeekendsAccordion({
               onChange={e => onSavingsChange(Number(e.target.value))}
               style={{
                 width: '100%',
-                background: workedCount > 0 ? `linear-gradient(to right, #a855f7 ${savePct}%, #1e293b ${savePct}%)` : '#1e293b',
+                background: workedCount > 0 ? `linear-gradient(to right, ${theme.purple} ${savePct}%, ${theme.sliderTrack} ${savePct}%)` : theme.sliderTrack,
               }}
             />
           </div>
@@ -1875,7 +2228,7 @@ function WeekendsAccordion({
 
 // ─── Month Totals Strip ─────────────────────────────────────────
 
-function MonthTotals({ days, sliders }: { days: DayData[]; sliders: Sliders }) {
+function MonthTotals({ days, sliders, theme }: { days: DayData[]; sliders: Sliders; theme: ThemeTokens }) {
   const workDays = days.filter(d => !d.isWeekend && !d.isSchoolHolidayWeekday)
   const holDays = days.filter(d => d.isSchoolHolidayWeekday)
   const workedWkds = days.filter(d => d.isWorkedWeekend)
@@ -1888,41 +2241,40 @@ function MonthTotals({ days, sliders }: { days: DayData[]; sliders: Sliders }) {
   const totalFuel = days.reduce((s, d) => s + d.fuelCost, 0)
   const totalSavings = days.length > 0 ? days[days.length - 1].savingsPotAfter : 0
   const totalSplit = holDays.reduce((s, d) => s + d.splitToday, 0)
-  const totalBillsPotAdded = days.length * sliders.billsPerDay
   const worstPot = Math.min(...days.map(d => d.billsPotAfter))
   const endPot = days.length > 0 ? days[days.length - 1].billsPotAfter : 0
   const endSpending = days.length > 0 ? days[days.length - 1].spendingPotAfter : 0
   const weekendIncome = workedWkds.reduce((s, d) => s + d.income, 0)
 
   const stats = [
-    { label: 'Total income', value: fmt(totalIncome + totalAFJ), color: '#22c55e' },
-    { label: 'Working days', value: String(workDays.length), color: '#f1f5f9' },
-    { label: 'Hol days', value: String(holDays.length), color: '#f59e0b' },
-    { label: 'Rest days', value: String(restDays.length), color: '#475569' },
-    { label: 'Weekend income', value: fmt(weekendIncome), color: workedWkds.length > 0 ? '#fbbf24' : '#475569' },
-    { label: 'Bills paid', value: fmt(totalBills), color: '#ef4444' },
-    { label: 'Car cost', value: fmt(totalCar), color: '#ef4444' },
-    { label: 'Fuel cost', value: fmt(totalFuel), color: '#ef4444' },
-    { label: 'Saved', value: fmt(totalSavings), color: '#a855f7' },
-    { label: 'Split (hol)', value: fmt(totalSplit), color: '#f59e0b' },
-    { label: 'End pot', value: fmt(endPot), color: endPot >= 0 ? '#22c55e' : '#ef4444' },
-    { label: 'Worst dip', value: worstPot < 0 ? `-${fmt(Math.abs(worstPot))}` : fmt(worstPot), color: worstPot < 0 ? '#ef4444' : '#22c55e' },
-    { label: 'AFJ received', value: fmt(totalAFJ), color: '#3b82f6' },
-    { label: 'Spending pot', value: fmt(endSpending), color: endSpending >= 0 ? '#f1f5f9' : '#ef4444' },
+    { label: 'Total income', value: fmt(totalIncome + totalAFJ), color: theme.green },
+    { label: 'Working days', value: String(workDays.length), color: theme.textPrimary },
+    { label: 'Hol days', value: String(holDays.length), color: theme.amber },
+    { label: 'Rest days', value: String(restDays.length), color: theme.textMuted },
+    { label: 'Weekend income', value: fmt(weekendIncome), color: workedWkds.length > 0 ? theme.amber : theme.textMuted },
+    { label: 'Bills paid', value: fmt(totalBills), color: theme.red },
+    { label: 'Car cost', value: fmt(totalCar), color: theme.red },
+    { label: 'Fuel cost', value: fmt(totalFuel), color: theme.red },
+    { label: 'Saved', value: fmt(totalSavings), color: theme.purple },
+    { label: 'Split (hol)', value: fmt(totalSplit), color: theme.amber },
+    { label: 'End pot', value: fmt(endPot), color: endPot >= 0 ? theme.green : theme.red },
+    { label: 'Worst dip', value: worstPot < 0 ? `-${fmt(Math.abs(worstPot))}` : fmt(worstPot), color: worstPot < 0 ? theme.red : theme.green },
+    { label: 'AFJ received', value: fmt(totalAFJ), color: theme.blue },
+    { label: 'Spending pot', value: fmt(endSpending), color: endSpending >= 0 ? theme.textPrimary : theme.red },
   ]
 
   return (
     <div style={{
-      background: '#0f1923', border: '1px solid #1e293b', borderRadius: 12,
+      background: theme.card, border: `1px solid ${theme.border}`, borderRadius: 12,
       padding: '16px', marginTop: 8,
     }}>
-      <div style={{ fontSize: 13, fontWeight: 700, color: '#93c5fd', marginBottom: 12 }}>
+      <div style={{ fontSize: 13, fontWeight: 700, color: theme.blueLight, marginBottom: 12 }}>
         Cycle summary
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px 8px' }}>
         {stats.map(s => (
           <div key={s.label}>
-            <div style={{ fontSize: 10, color: '#475569', marginBottom: 2 }}>{s.label}</div>
+            <div style={{ fontSize: 10, color: theme.textMuted, marginBottom: 2 }}>{s.label}</div>
             <div style={{ fontSize: 15, fontWeight: 700, color: s.color, fontVariantNumeric: 'tabular-nums' }}>{s.value}</div>
           </div>
         ))}
@@ -1939,6 +2291,10 @@ function weekendStateKey(month: number, year: number): string {
   return `fin-weekends-${year}-${String(month).padStart(2, '0')}`
 }
 
+function monthCarryKey(monthKey: string): string {
+  return `fin-carry-toggle-${monthKey.slice('fin-bill-days-'.length)}`
+}
+
 export default function FinanceSimulator() {
   const [selectedMonthIdx, setSelectedMonthIdx] = useState(0)
   const [slidersOpen, setSlidersOpen] = useState(true)
@@ -1951,7 +2307,6 @@ export default function FinanceSimulator() {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS)
   const [sliders, setSliders] = useState<Sliders>(DEFAULT_SLIDERS)
   const [billDayOverrides, setBillDayOverrides] = useState<Record<string, Record<string, number>>>({})
-  // Per-month weekend state, keyed by fin-weekends-YYYY-MM
   const [allWeekendStates, setAllWeekendStates] = useState<Record<string, WeekendState>>({})
   const [hydrated, setHydrated] = useState(false)
 
@@ -1963,10 +2318,26 @@ export default function FinanceSimulator() {
   const [addBillOpen, setAddBillOpen] = useState(false)
   const [editingBill, setEditingBill] = useState<CustomBill | null>(null)
 
-  // Context menu
+  // Bill context menu (bills mode)
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
 
-  // Hydrate from localStorage — migrate old offDayRingFence key to offDaySplit
+  // Day card context menu (normal mode)
+  const [dayCardMenu, setDayCardMenu] = useState<DayCardMenuState | null>(null)
+
+  // Balance override modal
+  const [balanceOverrideModal, setBalanceOverrideModal] = useState<BalanceOverrideModalState | null>(null)
+
+  // Balance overrides: key = YYYY-MM-DD, value = override pot
+  const [balanceOverrides, setBalanceOverrides] = useState<Record<string, number>>({})
+
+  // Per-month carry-over toggle: key = YYYY-MM, value = true (apply) or false (discard)
+  // stored per month in localStorage as fin-carry-toggle-YYYY-MM
+  const [carryToggles, setCarryToggles] = useState<Record<string, boolean>>({})
+
+  // Compute today's date key once
+  const todayKey = useMemo(() => todayDateKey(), [])
+
+  // Hydrate from localStorage
   useEffect(() => {
     try {
       const s = localStorage.getItem('fin-settings')
@@ -1977,12 +2348,12 @@ export default function FinanceSimulator() {
           ...parsed,
           afjDailyRate: parsed.afjDailyRate ?? DEFAULT_SETTINGS.afjDailyRate,
           extraIncomes: parsed.extraIncomes ?? [],
+          darkMode: parsed.darkMode ?? false,
         })
       }
       const sl = localStorage.getItem('fin-sliders')
       if (sl) {
         const parsed = JSON.parse(sl)
-        // Migrate: old key offDayRingFence → offDaySplit
         setSliders({
           normalDayRate: parsed.normalDayRate ?? DEFAULT_SLIDERS.normalDayRate,
           offDayRate: parsed.offDayRate ?? DEFAULT_SLIDERS.offDayRate,
@@ -2010,12 +2381,11 @@ export default function FinanceSimulator() {
       }
       setAllWeekendStates(wkdStates)
 
-      // Load custom bills — seed with all bills on first load if nothing stored
+      // Load custom bills
       const cbRaw = localStorage.getItem('fin-custom-bills')
       if (cbRaw) {
         try {
           const parsed = JSON.parse(cbRaw) as CustomBill[]
-          // If stored list is empty (legacy state before migration), re-seed
           if (parsed.length === 0) {
             setCustomBills(SEED_CUSTOM_BILLS)
             localStorage.setItem('fin-custom-bills', JSON.stringify(SEED_CUSTOM_BILLS))
@@ -2024,7 +2394,6 @@ export default function FinanceSimulator() {
           }
         } catch { /* ignore */ }
       } else {
-        // First ever load — seed all bills
         setCustomBills(SEED_CUSTOM_BILLS)
         localStorage.setItem('fin-custom-bills', JSON.stringify(SEED_CUSTOM_BILLS))
       }
@@ -2034,6 +2403,24 @@ export default function FinanceSimulator() {
       if (hiddenRaw) {
         try { setHiddenBillIds(new Set(JSON.parse(hiddenRaw))) } catch { /* ignore */ }
       }
+
+      // Load balance overrides
+      const boRaw = localStorage.getItem('fin-balance-overrides')
+      if (boRaw) {
+        try { setBalanceOverrides(JSON.parse(boRaw)) } catch { /* ignore */ }
+      }
+
+      // Load carry toggles for all months
+      const toggles: Record<string, boolean> = {}
+      for (const m of MONTHS) {
+        const ymKey = `${m.year}-${String(m.month).padStart(2, '0')}`
+        const raw = localStorage.getItem(`fin-carry-toggle-${ymKey}`)
+        if (raw !== null) {
+          try { toggles[ymKey] = JSON.parse(raw) } catch { /* ignore */ }
+        }
+      }
+      setCarryToggles(toggles)
+
     } catch { /* ignore */ }
     setHydrated(true)
   }, [])
@@ -2042,7 +2429,23 @@ export default function FinanceSimulator() {
   useEffect(() => {
     if (!hydrated) return
     localStorage.setItem('fin-settings', JSON.stringify(settings))
+    // Apply dark class to html element
+    if (settings.darkMode) {
+      document.documentElement.classList.add('dark')
+    } else {
+      document.documentElement.classList.remove('dark')
+    }
   }, [settings, hydrated])
+
+  // Apply dark class on hydration
+  useEffect(() => {
+    if (!hydrated) return
+    if (settings.darkMode) {
+      document.documentElement.classList.add('dark')
+    } else {
+      document.documentElement.classList.remove('dark')
+    }
+  }, [hydrated, settings.darkMode])
 
   // Persist sliders
   useEffect(() => {
@@ -2062,12 +2465,81 @@ export default function FinanceSimulator() {
     localStorage.setItem('fin-bill-hidden', JSON.stringify(Array.from(hiddenBillIds)))
   }, [hiddenBillIds, hydrated])
 
+  // Persist balance overrides
+  useEffect(() => {
+    if (!hydrated) return
+    localStorage.setItem('fin-balance-overrides', JSON.stringify(balanceOverrides))
+  }, [balanceOverrides, hydrated])
+
+  // Theme object
+  const theme = settings.darkMode ? DARK : LIGHT
+
+  // Visible months (hide past months for UI, but compute all for carry-forward)
+  const today = useMemo(() => new Date(), [])
+  const todayMonthVal = today.getFullYear() * 100 + (today.getMonth() + 1)
+
+  const visibleMonths = useMemo(
+    () => MONTHS.filter(m => m.year * 100 + m.month >= todayMonthVal),
+    [todayMonthVal]
+  )
+
+  // If selectedMonthIdx points to a hidden month, snap to first visible
+  useEffect(() => {
+    if (!hydrated) return
+    const selectedMonth = MONTHS[selectedMonthIdx]
+    if (selectedMonth) {
+      const isVisible = selectedMonth.year * 100 + selectedMonth.month >= todayMonthVal
+      if (!isVisible) {
+        // find first visible index in MONTHS
+        const firstVisibleIdx = MONTHS.findIndex(m => m.year * 100 + m.month >= todayMonthVal)
+        if (firstVisibleIdx >= 0) setSelectedMonthIdx(firstVisibleIdx)
+      }
+    }
+  }, [hydrated, selectedMonthIdx, todayMonthVal])
+
+  // Simulate all months — still compute ALL for carry-forward accuracy
+  const allSimulations = useMemo(() => {
+    let pot = 0
+    let prevRingFenceAccumulated = 0
+    const sims: { month: MonthOption; days: DayData[]; endPot: number; ringFenceAccumulated: number }[] = []
+    for (const m of MONTHS) {
+      const mKey = `fin-bill-days-${m.year}-${String(m.month).padStart(2, '0')}`
+      const overrides = billDayOverrides[mKey] ?? {}
+      const wkdKey = weekendStateKey(m.month, m.year)
+      const wkdState: WeekendState = allWeekendStates[wkdKey] ?? DEFAULT_WEEKEND_STATE
+      const { days, endPot, ringFenceAccumulated } = simulateCycle(
+        m.month, m.year, sliders, settings, overrides, pot, prevRingFenceAccumulated,
+        wkdState.workedDays, wkdState.weekendRate, customBills, hiddenBillIds,
+        wkdState.weekendBillsPerDay, wkdState.weekendSavings, balanceOverrides,
+      )
+      sims.push({ month: m, days, endPot, ringFenceAccumulated })
+      pot = endPot
+      // Check carry toggle for this month: key = YYYY-MM
+      const ymKey = `${m.year}-${String(m.month).padStart(2, '0')}`
+      const carryApplies = carryToggles[ymKey] !== false // default true
+      prevRingFenceAccumulated = carryApplies ? ringFenceAccumulated : 0
+    }
+    return sims
+  }, [sliders, settings, billDayOverrides, allWeekendStates, customBills, hiddenBillIds, balanceOverrides, carryToggles])
+
+  const currentSim = allSimulations[selectedMonthIdx]
   const selectedMonth = MONTHS[selectedMonthIdx]
+
   const monthKey = `fin-bill-days-${selectedMonth.year}-${String(selectedMonth.month).padStart(2, '0')}`
   const currentBillOverrides = billDayOverrides[monthKey] ?? {}
 
   const currentWkdKey = weekendStateKey(selectedMonth.month, selectedMonth.year)
   const currentWkdState: WeekendState = allWeekendStates[currentWkdKey] ?? DEFAULT_WEEKEND_STATE
+
+  // Carry toggle for selected month
+  const selectedMonthYMKey = `${selectedMonth.year}-${String(selectedMonth.month).padStart(2, '0')}`
+  const carryApplies = carryToggles[selectedMonthYMKey] !== false
+
+  function toggleCarry() {
+    const newVal = !carryApplies
+    setCarryToggles(prev => ({ ...prev, [selectedMonthYMKey]: newVal }))
+    localStorage.setItem(`fin-carry-toggle-${selectedMonthYMKey}`, JSON.stringify(newVal))
+  }
 
   function updateWeekendState(patch: Partial<WeekendState>) {
     const updated: WeekendState = { ...currentWkdState, ...patch }
@@ -2087,37 +2559,12 @@ export default function FinanceSimulator() {
     localStorage.setItem(monthKey, JSON.stringify(updated))
   }
 
-  // Simulate all months, carrying pot and ring-fence forward
-  const allSimulations = useMemo(() => {
-    let pot = 0
-    let prevRingFenceAccumulated = 0
-    const sims: { month: MonthOption; days: DayData[]; endPot: number; ringFenceAccumulated: number }[] = []
-    for (const m of MONTHS) {
-      const mKey = `fin-bill-days-${m.year}-${String(m.month).padStart(2, '0')}`
-      const overrides = billDayOverrides[mKey] ?? {}
-      const wkdKey = weekendStateKey(m.month, m.year)
-      const wkdState: WeekendState = allWeekendStates[wkdKey] ?? DEFAULT_WEEKEND_STATE
-      const { days, endPot, ringFenceAccumulated } = simulateCycle(
-        m.month, m.year, sliders, settings, overrides, pot, prevRingFenceAccumulated,
-        wkdState.workedDays, wkdState.weekendRate, customBills, hiddenBillIds,
-        wkdState.weekendBillsPerDay, wkdState.weekendSavings,
-      )
-      sims.push({ month: m, days, endPot, ringFenceAccumulated })
-      pot = endPot
-      prevRingFenceAccumulated = ringFenceAccumulated
-    }
-    return sims
-  }, [sliders, settings, billDayOverrides, allWeekendStates, customBills, hiddenBillIds])
-
-  const currentSim = allSimulations[selectedMonthIdx]
-
   // Active bills for current month (static + custom)
   const activeBills = [
     ...BILLS.filter(b => isBillActive(b, selectedMonth.month, selectedMonth.year)),
     ...customBillsToBills(customBills, selectedMonth.month, selectedMonth.year, currentBillOverrides),
   ]
 
-  // Set of custom bill IDs for the context menu
   const customBillIdSet = new Set(customBills.map(cb => cb.id))
 
   function updateSlider(key: keyof Sliders, value: number) {
@@ -2146,8 +2593,6 @@ export default function FinanceSimulator() {
     const billId = String(active.id)
     const bill = activeBills.find(b => b.id === billId)
     if (!bill || !bill.moveable) return
-
-    // Parse day from droppable id: "day-{dom}-{monthIndex}"
     const parts = String(over.id).split('-')
     if (parts.length < 3 || parts[0] !== 'day') return
     const dom = Number(parts[1])
@@ -2155,10 +2600,8 @@ export default function FinanceSimulator() {
     updateBillDay(billId, dom)
   }
 
-  // Get bill name for drag overlay
   const activeBillName = activeDragId ? (activeBills.find(b => b.id === activeDragId)?.name ?? '') : ''
 
-  // Hide/show bill handlers
   function hideBill(id: string) {
     setHiddenBillIds(prev => new Set([...prev, id]))
   }
@@ -2196,26 +2639,65 @@ export default function FinanceSimulator() {
     setAddBillOpen(true)
   }
 
+  // Balance override handlers
+  function handleSetBalance(dateKey: string, value: number) {
+    setBalanceOverrides(prev => ({ ...prev, [dateKey]: value }))
+  }
+
+  function handleRemoveBalance(dateKey: string) {
+    setBalanceOverrides(prev => {
+      const next = { ...prev }
+      delete next[dateKey]
+      return next
+    })
+  }
+
+  // Day card context menu handler
+  function handleDayCardContextMenu(menu: DayCardMenuState) {
+    setDayCardMenu(menu)
+  }
+
+  function openBalanceModal(menu: DayCardMenuState) {
+    const day = currentSim.days.find(d => {
+      const dk = `${d.date.getFullYear()}-${String(d.date.getMonth() + 1).padStart(2, '0')}-${String(d.dayOfMonth).padStart(2, '0')}`
+      return dk === menu.dateKey
+    })
+    setBalanceOverrideModal({
+      open: true,
+      dateKey: menu.dateKey,
+      dateLabel: menu.dateLabel,
+      currentValue: balanceOverrides[menu.dateKey] ?? (day?.billsPotAfter ?? 0),
+    })
+  }
+
   // Dynamic slider maxes
   const billsMax = sliders.normalDayRate
   const savingsMax = Math.max(0, sliders.normalDayRate - sliders.billsPerDay)
 
+  // Today's month/year for filtering past days
+  const todayYear = today.getFullYear()
+  const todayMonthNum = today.getMonth() + 1
+  const todayDay = today.getDate()
+
+  const isCurrentRealMonth = selectedMonth.year === todayYear && selectedMonth.month === todayMonthNum
+
   if (!hydrated) {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100dvh', color: '#475569', fontSize: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100dvh', color: '#94a3b8', fontSize: 14, background: '#f8fafc' }}>
         Loading...
       </div>
     )
   }
 
   return (
-    <div style={{ background: '#080d14', minHeight: '100dvh', color: '#f1f5f9' }}>
+    <div style={{ background: theme.bg, minHeight: '100dvh', color: theme.textPrimary }}>
       {/* Settings panel */}
       {settingsOpen && (
         <SettingsPanel
           settings={settings}
           onSave={setSettings}
           onClose={() => setSettingsOpen(false)}
+          theme={theme}
         />
       )}
 
@@ -2225,10 +2707,11 @@ export default function FinanceSimulator() {
           onClose={() => { setAddBillOpen(false); setEditingBill(null) }}
           onSave={handleSaveCustomBill}
           existingBill={editingBill}
+          dark={settings.darkMode}
         />
       )}
 
-      {/* Context menu */}
+      {/* Bill context menu (bills mode) */}
       {contextMenu && (
         <BillContextMenu
           menu={contextMenu}
@@ -2236,15 +2719,39 @@ export default function FinanceSimulator() {
           onHide={hideBill}
           onShow={showBill}
           onEdit={openEditBill}
+          theme={theme}
+        />
+      )}
+
+      {/* Day card context menu (normal mode) */}
+      {dayCardMenu && (
+        <DayCardContextMenu
+          menu={dayCardMenu}
+          onClose={() => setDayCardMenu(null)}
+          onSetBalance={() => openBalanceModal(dayCardMenu)}
+          isToday={dayCardMenu.dateKey === todayKey}
+          theme={theme}
+        />
+      )}
+
+      {/* Balance override modal */}
+      {balanceOverrideModal?.open && (
+        <BalanceOverrideModal
+          state={balanceOverrideModal}
+          onSave={handleSetBalance}
+          onRemove={handleRemoveBalance}
+          onClose={() => setBalanceOverrideModal(null)}
+          hasExisting={balanceOverrides[balanceOverrideModal.dateKey] !== undefined}
+          theme={theme}
         />
       )}
 
       {/* Sticky header: Month tabs + gear */}
       <div style={{
         position: 'sticky', top: 0, zIndex: 50,
-        background: 'rgba(8,13,20,0.96)',
+        background: settings.darkMode ? 'rgba(8,13,20,0.96)' : 'rgba(248,250,252,0.96)',
         backdropFilter: 'blur(12px)',
-        borderBottom: '1px solid #1e293b',
+        borderBottom: `1px solid ${theme.border}`,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', padding: '0 8px' }}>
           <div style={{
@@ -2252,7 +2759,8 @@ export default function FinanceSimulator() {
             scrollbarWidth: 'none',
             WebkitOverflowScrolling: 'touch',
           }}>
-            {MONTHS.map((m, i) => {
+            {visibleMonths.map((m) => {
+              const i = MONTHS.indexOf(m)
               const sim = allSimulations[i]
               const endPot = sim ? sim.endPot : 0
               const hasDeficit = sim ? sim.days.some(d => d.isPotNegative) : false
@@ -2266,17 +2774,17 @@ export default function FinanceSimulator() {
                     padding: '12px 14px 10px',
                     background: 'transparent',
                     border: 'none',
-                    borderBottom: `2px solid ${isActive ? '#3b82f6' : 'transparent'}`,
+                    borderBottom: `2px solid ${isActive ? theme.blue : 'transparent'}`,
                     cursor: 'pointer',
                     display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
                   }}
                 >
-                  <span style={{ fontSize: 13, fontWeight: isActive ? 700 : 400, color: isActive ? '#f1f5f9' : '#475569' }}>
+                  <span style={{ fontSize: 13, fontWeight: isActive ? 700 : 400, color: isActive ? theme.textPrimary : theme.textMuted }}>
                     {m.short}
                   </span>
                   <span style={{
                     fontSize: 9, fontVariantNumeric: 'tabular-nums', fontWeight: 600,
-                    color: hasDeficit ? '#ef4444' : endPot >= 0 ? '#22c55e' : '#ef4444',
+                    color: hasDeficit ? theme.red : endPot >= 0 ? theme.green : theme.red,
                   }}>
                     {endPot >= 0 ? '+' : ''}{Math.round(endPot)}
                   </span>
@@ -2288,7 +2796,7 @@ export default function FinanceSimulator() {
             onClick={() => setSettingsOpen(true)}
             style={{
               flexShrink: 0, background: 'transparent', border: 'none',
-              color: '#475569', cursor: 'pointer', padding: '12px 10px',
+              color: theme.textMuted, cursor: 'pointer', padding: '12px 10px',
             }}
           >
             <GearIcon size={20} />
@@ -2301,17 +2809,17 @@ export default function FinanceSimulator() {
 
         {/* Month heading */}
         <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-          <h1 style={{ fontSize: 20, fontWeight: 800, color: '#f1f5f9', margin: 0 }}>
+          <h1 style={{ fontSize: 20, fontWeight: 800, color: theme.textPrimary, margin: 0 }}>
             {selectedMonth.label}
           </h1>
-          <span style={{ fontSize: 12, color: '#475569' }}>
+          <span style={{ fontSize: 12, color: theme.textMuted }}>
             cycle: {selectedMonth.short} 8 → {selectedMonth.month === 12 ? 'Jan' : MONTH_SHORT[selectedMonth.month]} 7
           </span>
         </div>
 
         {/* Sliders section */}
         <div style={{
-          background: '#0f1923', border: '1px solid #1e293b', borderRadius: 12,
+          background: theme.card, border: `1px solid ${theme.border}`, borderRadius: 12,
           marginBottom: 10, overflow: 'hidden',
         }}>
           <button
@@ -2319,12 +2827,12 @@ export default function FinanceSimulator() {
             style={{
               width: '100%', background: 'transparent', border: 'none',
               padding: '12px 16px', display: 'flex', justifyContent: 'space-between',
-              alignItems: 'center', cursor: 'pointer', color: '#f1f5f9',
+              alignItems: 'center', cursor: 'pointer', color: theme.textPrimary,
             }}
           >
             <span style={{ fontSize: 13, fontWeight: 600 }}>Income &amp; allocation sliders</span>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <span style={{ fontSize: 12, color: '#475569' }}>
+              <span style={{ fontSize: 12, color: theme.textMuted }}>
                 {fmt(sliders.normalDayRate)}/d · {fmt(sliders.billsPerDay)} bills · {fmt(sliders.savingsOnExtra)} save
               </span>
               <ChevronIcon down={!slidersOpen} size={16} />
@@ -2338,41 +2846,78 @@ export default function FinanceSimulator() {
                 value={sliders.normalDayRate}
                 min={0} max={200}
                 onChange={v => updateSlider('normalDayRate', v)}
-                color="#22c55e"
+                color={theme.green}
+                theme={theme}
               />
               <SliderRow
                 label="Off-day rate (school holiday)"
                 value={sliders.offDayRate}
                 min={0} max={300}
                 onChange={v => updateSlider('offDayRate', v)}
-                color="#f59e0b"
+                color={theme.amber}
+                theme={theme}
               />
               <SliderRow
                 label="Bills per day (into bills pot)"
                 value={sliders.billsPerDay}
                 min={0} max={billsMax}
                 onChange={v => updateSlider('billsPerDay', v)}
-                color="#3b82f6"
+                color={theme.blue}
+                theme={theme}
               />
               <SliderRow
                 label="Savings on extra"
                 value={sliders.savingsOnExtra}
                 min={0} max={savingsMax}
                 onChange={v => updateSlider('savingsOnExtra', v)}
-                color="#a855f7"
+                color={theme.purple}
+                theme={theme}
               />
               <SliderRow
-                label="Off-day split"
+                label="Holiday carry-over per day"
                 value={sliders.offDaySplit}
                 min={0} max={sliders.offDayRate}
                 onChange={v => updateSlider('offDaySplit', v)}
-                color="#f59e0b"
+                color={theme.amber}
+                theme={theme}
               />
+
+              {/* Carry-over info + toggle */}
+              <div style={{
+                marginTop: 4, marginBottom: 8,
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                gap: 8,
+              }}>
+                <span style={{ fontSize: 12, color: theme.textMuted }}>
+                  Total carry-over this month: <strong style={{ color: theme.amber }}>{fmt(currentSim?.ringFenceAccumulated ?? 0)}</strong>
+                </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                  <span style={{ fontSize: 11, color: theme.textMuted }}>Carry forward</span>
+                  <button
+                    onClick={toggleCarry}
+                    style={{
+                      width: 36, height: 20, borderRadius: 10,
+                      background: carryApplies ? theme.blue : theme.border,
+                      border: 'none', cursor: 'pointer', position: 'relative',
+                      transition: 'background 0.2s ease', flexShrink: 0,
+                    }}
+                  >
+                    <span style={{
+                      position: 'absolute', top: 2, left: carryApplies ? 18 : 2,
+                      width: 16, height: 16, borderRadius: '50%',
+                      background: '#fff',
+                      transition: 'left 0.2s ease',
+                      boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+                      display: 'block',
+                    }} />
+                  </button>
+                </div>
+              </div>
 
               {/* Quick summary */}
               <div style={{
-                marginTop: 8, padding: '10px 12px',
-                background: '#080d14', borderRadius: 8,
+                marginTop: 4, padding: '10px 12px',
+                background: theme.bg, borderRadius: 8,
                 display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8,
               }}>
                 {[
@@ -2381,8 +2926,8 @@ export default function FinanceSimulator() {
                   { label: 'Bills pot/day', value: `+${fmt(sliders.billsPerDay)}` },
                 ].map(s => (
                   <div key={s.label} style={{ textAlign: 'center' }}>
-                    <div style={{ fontSize: 14, fontWeight: 700, color: '#f1f5f9', fontVariantNumeric: 'tabular-nums' }}>{s.value}</div>
-                    <div style={{ fontSize: 10, color: '#475569' }}>{s.label}</div>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: theme.textPrimary, fontVariantNumeric: 'tabular-nums' }}>{s.value}</div>
+                    <div style={{ fontSize: 10, color: theme.textMuted }}>{s.label}</div>
                   </div>
                 ))}
               </div>
@@ -2402,19 +2947,20 @@ export default function FinanceSimulator() {
           onRateChange={v => updateWeekendState({ weekendRate: v })}
           onBillsPerDayChange={v => updateWeekendState({ weekendBillsPerDay: v })}
           onSavingsChange={v => updateWeekendState({ weekendSavings: v })}
+          theme={theme}
         />
 
-        {/* Bills / Add row — always visible, above day cards */}
+        {/* Bills / Add row */}
         <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
           <button
             onClick={() => setBillsMode(m => !m)}
             style={{
               flex: '0 0 42%',
               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-              background: billsMode ? 'rgba(59,130,246,0.15)' : 'transparent',
-              border: `1px solid ${billsMode ? '#3b82f6' : '#1e293b'}`,
+              background: billsMode ? `${theme.blue}26` : 'transparent',
+              border: `1px solid ${billsMode ? theme.blue : theme.border}`,
               borderRadius: 8, padding: '10px 14px', cursor: 'pointer',
-              color: billsMode ? '#93c5fd' : '#94a3b8',
+              color: billsMode ? theme.blueLight : theme.textSecondary,
               fontSize: 13, fontWeight: 600,
               minHeight: 44,
               transition: 'all 0.2s ease',
@@ -2428,10 +2974,10 @@ export default function FinanceSimulator() {
             style={{
               flex: 1,
               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-              background: 'rgba(34,197,94,0.08)',
-              border: '1px solid rgba(34,197,94,0.25)',
+              background: `${theme.green}14`,
+              border: `1px solid ${theme.green}40`,
               borderRadius: 8, padding: '10px 14px', cursor: 'pointer',
-              color: '#22c55e',
+              color: theme.green,
               fontSize: 13, fontWeight: 600,
               minHeight: 44,
               transition: 'all 0.2s ease',
@@ -2445,11 +2991,34 @@ export default function FinanceSimulator() {
         {/* Day cards OR Bills mode */}
         {!billsMode ? (
           <div style={{ marginBottom: 8 }}>
-            {currentSim.days.map((day, i) => {
-              const mIdx = day.date.getMonth()
-              const mShort = MONTH_SHORT[mIdx]
-              return <DayCard key={i} day={day} monthShort={mShort} />
-            })}
+            {currentSim.days
+              .filter(day => {
+                if (!isCurrentRealMonth) return true
+                // Hide past days in the current real-world month
+                const d = day.date
+                const dYear = d.getFullYear()
+                const dMonth = d.getMonth() + 1
+                const dDay = d.getDate()
+                if (dYear < todayYear) return false
+                if (dYear === todayYear && dMonth < todayMonthNum) return false
+                if (dYear === todayYear && dMonth === todayMonthNum && dDay < todayDay) return false
+                return true
+              })
+              .map((day, i) => {
+                const mIdx = day.date.getMonth()
+                const mShort = MONTH_SHORT[mIdx]
+                const dk = `${day.date.getFullYear()}-${String(day.date.getMonth() + 1).padStart(2, '0')}-${String(day.dayOfMonth).padStart(2, '0')}`
+                return (
+                  <DayCard
+                    key={i}
+                    day={day}
+                    monthShort={mShort}
+                    theme={theme}
+                    onContextMenu={handleDayCardContextMenu}
+                    hasOverride={balanceOverrides[dk] !== undefined}
+                  />
+                )
+              })}
           </div>
         ) : (
           <DndContext
@@ -2459,40 +3028,53 @@ export default function FinanceSimulator() {
             onDragEnd={handleDragEnd}
           >
             <div style={{ marginBottom: 8 }}>
-              {currentSim.days.map((day, i) => {
-                const dom = day.dayOfMonth
-                const monthIdx = day.date.getMonth()
-                const droppableId = `day-${dom}-${monthIdx}`
-                const billsOnThisDay = activeBills.filter(b => {
-                  const assignedDay = getBillDay(b, day.date.getMonth() + 1, day.date.getFullYear(), currentBillOverrides)
-                  return assignedDay === dom && (day.date.getMonth() + 1 === selectedMonth.month
-                    ? isBillActive(b, selectedMonth.month, selectedMonth.year)
-                    : isBillActive(b, day.date.getMonth() + 1, day.date.getFullYear()))
+              {currentSim.days
+                .filter(day => {
+                  if (!isCurrentRealMonth) return true
+                  const d = day.date
+                  const dYear = d.getFullYear()
+                  const dMonth = d.getMonth() + 1
+                  const dDay = d.getDate()
+                  if (dYear < todayYear) return false
+                  if (dYear === todayYear && dMonth < todayMonthNum) return false
+                  if (dYear === todayYear && dMonth === todayMonthNum && dDay < todayDay) return false
+                  return true
                 })
-                const billAmounts: Record<string, number> = {}
-                billsOnThisDay.forEach(b => { billAmounts[b.id] = b.amount })
+                .map((day, i) => {
+                  const dom = day.dayOfMonth
+                  const monthIdx = day.date.getMonth()
+                  const droppableId = `day-${dom}-${monthIdx}`
+                  const billsOnThisDay = activeBills.filter(b => {
+                    const assignedDay = getBillDay(b, day.date.getMonth() + 1, day.date.getFullYear(), currentBillOverrides)
+                    return assignedDay === dom && (day.date.getMonth() + 1 === selectedMonth.month
+                      ? isBillActive(b, selectedMonth.month, selectedMonth.year)
+                      : isBillActive(b, day.date.getMonth() + 1, day.date.getFullYear()))
+                  })
+                  const billAmounts: Record<string, number> = {}
+                  billsOnThisDay.forEach(b => { billAmounts[b.id] = b.amount })
 
-                return (
-                  <DroppableDayRow
-                    key={i}
-                    dayData={day}
-                    bills={billsOnThisDay}
-                    billAmounts={billAmounts}
-                    isOver={overDayId === droppableId}
-                    hiddenBillIds={hiddenBillIds}
-                    customBillIds={customBillIdSet}
-                    onBillContextMenu={setContextMenu}
-                  />
-                )
-              })}
+                  return (
+                    <DroppableDayRow
+                      key={i}
+                      dayData={day}
+                      bills={billsOnThisDay}
+                      billAmounts={billAmounts}
+                      isOver={overDayId === droppableId}
+                      hiddenBillIds={hiddenBillIds}
+                      customBillIds={customBillIdSet}
+                      onBillContextMenu={setContextMenu}
+                      theme={theme}
+                    />
+                  )
+                })}
             </div>
 
             <DragOverlay>
               {activeDragId ? (
                 <div style={{
-                  background: '#1e293b', border: '1px solid #3b82f6', borderRadius: 8,
-                  padding: '6px 12px', fontSize: 13, color: '#f1f5f9', fontWeight: 600,
-                  boxShadow: '0 8px 24px rgba(0,0,0,0.6)',
+                  background: theme.borderStrong, border: `1px solid ${theme.blue}`, borderRadius: 8,
+                  padding: '6px 12px', fontSize: 13, color: theme.textPrimary, fontWeight: 600,
+                  boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
                 }}>
                   {activeBillName}
                 </div>
@@ -2502,7 +3084,7 @@ export default function FinanceSimulator() {
         )}
 
         {/* Month totals */}
-        <MonthTotals days={currentSim.days} sliders={sliders} />
+        <MonthTotals days={currentSim.days} sliders={sliders} theme={theme} />
 
       </div>
     </div>

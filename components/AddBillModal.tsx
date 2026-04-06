@@ -33,26 +33,48 @@ function CloseIcon({ size = 18 }: { size?: number }) {
   )
 }
 
-// ─── Shared styles ───────────────────────────────────────────────
+// ─── Theme tokens (minimal) ──────────────────────────────────────
 
-const fieldStyle: React.CSSProperties = {
-  background: '#0a111a',
-  border: '1px solid #1e293b',
-  borderRadius: 8,
-  color: '#f1f5f9',
-  padding: '10px 12px',
-  fontSize: 14,
-  width: '100%',
-  outline: 'none',
-  fontFamily: 'inherit',
-  boxSizing: 'border-box',
+interface ModalTheme {
+  bg: string
+  card: string
+  cardAlt: string
+  border: string
+  textPrimary: string
+  textSecondary: string
+  textMuted: string
+  blue: string
+  blueActive: string
+  green: string
+  red: string
 }
 
-const labelStyle: React.CSSProperties = {
-  fontSize: 12,
-  color: '#475569',
-  marginBottom: 4,
-  display: 'block',
+const DARK_MODAL: ModalTheme = {
+  bg: '#0a111a',
+  card: '#0f1923',
+  cardAlt: '#0a111a',
+  border: '#1e293b',
+  textPrimary: '#f1f5f9',
+  textSecondary: '#94a3b8',
+  textMuted: '#475569',
+  blue: '#3b82f6',
+  blueActive: '#93c5fd',
+  green: '#22c55e',
+  red: '#ef4444',
+}
+
+const LIGHT_MODAL: ModalTheme = {
+  bg: '#f8fafc',
+  card: '#ffffff',
+  cardAlt: '#f1f5f9',
+  border: '#e2e8f0',
+  textPrimary: '#0f172a',
+  textSecondary: '#475569',
+  textMuted: '#94a3b8',
+  blue: '#2563eb',
+  blueActive: '#2563eb',
+  green: '#16a34a',
+  red: '#dc2626',
 }
 
 // ─── Pill button ─────────────────────────────────────────────────
@@ -61,10 +83,12 @@ function Pill({
   active,
   onClick,
   children,
+  t,
 }: {
   active: boolean
   onClick: () => void
   children: React.ReactNode
+  t: ModalTheme
 }) {
   return (
     <button
@@ -73,9 +97,9 @@ function Pill({
       style={{
         padding: '7px 14px',
         borderRadius: 8,
-        border: `1px solid ${active ? '#3b82f6' : '#1e293b'}`,
-        background: active ? 'rgba(59,130,246,0.15)' : 'transparent',
-        color: active ? '#93c5fd' : '#94a3b8',
+        border: `1px solid ${active ? t.blue : t.border}`,
+        background: active ? `${t.blue}26` : 'transparent',
+        color: active ? t.blueActive : t.textSecondary,
         fontSize: 13,
         fontWeight: active ? 600 : 400,
         cursor: 'pointer',
@@ -108,11 +132,13 @@ function MonthYearSelect({
   year,
   onMonthChange,
   onYearChange,
+  fieldStyle,
 }: {
   month: number
   year: number
   onMonthChange: (m: number) => void
   onYearChange: (y: number) => void
+  fieldStyle: React.CSSProperties
 }) {
   return (
     <div style={{ display: 'flex', gap: 8 }}>
@@ -144,9 +170,11 @@ const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 function WeekDayPicker({
   selected,
   onChange,
+  t,
 }: {
   selected: number[]
   onChange: (days: number[]) => void
+  t: ModalTheme
 }) {
   function toggle(d: number) {
     if (selected.includes(d)) {
@@ -168,9 +196,9 @@ function WeekDayPicker({
             style={{
               padding: '7px 10px',
               borderRadius: 8,
-              border: `1px solid ${active ? '#3b82f6' : '#1e293b'}`,
-              background: active ? 'rgba(59,130,246,0.15)' : 'transparent',
-              color: active ? '#93c5fd' : '#94a3b8',
+              border: `1px solid ${active ? t.blue : t.border}`,
+              background: active ? `${t.blue}26` : 'transparent',
+              color: active ? t.blueActive : t.textSecondary,
               fontSize: 12,
               fontWeight: active ? 700 : 400,
               cursor: 'pointer',
@@ -192,9 +220,13 @@ function WeekDayPicker({
 function OneOffDates({
   dates,
   onChange,
+  t,
+  fieldStyle,
 }: {
   dates: string[]
   onChange: (dates: string[]) => void
+  t: ModalTheme
+  fieldStyle: React.CSSProperties
 }) {
   const [adding, setAdding] = useState(false)
   const [newDate, setNewDate] = useState(todayYMD())
@@ -215,23 +247,23 @@ function OneOffDates({
   return (
     <div>
       {dates.length === 0 && !adding && (
-        <div style={{ fontSize: 13, color: '#475569', marginBottom: 8 }}>No dates added yet</div>
+        <div style={{ fontSize: 13, color: t.textMuted, marginBottom: 8 }}>No dates added yet</div>
       )}
       {dates.map(d => (
         <div
           key={d}
           style={{
             display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-            padding: '8px 12px', background: '#0a111a', border: '1px solid #1e293b',
+            padding: '8px 12px', background: t.cardAlt, border: `1px solid ${t.border}`,
             borderRadius: 8, marginBottom: 6,
           }}
         >
-          <span style={{ fontSize: 13, color: '#f1f5f9' }}>{d}</span>
+          <span style={{ fontSize: 13, color: t.textPrimary }}>{d}</span>
           <button
             type="button"
             onClick={() => removeDate(d)}
             style={{
-              background: 'transparent', border: 'none', color: '#ef4444',
+              background: 'transparent', border: 'none', color: t.red,
               cursor: 'pointer', padding: 4, display: 'flex', alignItems: 'center',
               minHeight: 44, minWidth: 44, justifyContent: 'center',
             }}
@@ -253,7 +285,7 @@ function OneOffDates({
             type="button"
             onClick={addDate}
             style={{
-              background: '#22c55e', color: '#fff', border: 'none', borderRadius: 8,
+              background: t.green, color: '#fff', border: 'none', borderRadius: 8,
               padding: '10px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer',
               minHeight: 44,
             }}
@@ -264,7 +296,7 @@ function OneOffDates({
             type="button"
             onClick={() => setAdding(false)}
             style={{
-              background: '#1e293b', color: '#94a3b8', border: 'none', borderRadius: 8,
+              background: t.border, color: t.textSecondary, border: 'none', borderRadius: 8,
               padding: '10px 14px', fontSize: 13, cursor: 'pointer', minHeight: 44,
             }}
           >
@@ -277,8 +309,8 @@ function OneOffDates({
           onClick={() => setAdding(true)}
           style={{
             display: 'flex', alignItems: 'center', gap: 6,
-            background: 'rgba(59,130,246,0.1)', border: '1px solid rgba(59,130,246,0.3)',
-            color: '#93c5fd', borderRadius: 8, padding: '9px 14px', fontSize: 13,
+            background: `${t.blue}1a`, border: `1px solid ${t.blue}4d`,
+            color: t.blueActive, borderRadius: 8, padding: '9px 14px', fontSize: 13,
             cursor: 'pointer', marginTop: 4, fontFamily: 'inherit', minHeight: 44,
           }}
         >
@@ -294,11 +326,13 @@ function OneOffDates({
 interface AddBillModalProps {
   onClose: () => void
   onSave: (bill: CustomBill) => void
-  existingBill?: CustomBill | null  // null = new, provided = edit
+  existingBill?: CustomBill | null
+  dark?: boolean
 }
 
-export default function AddBillModal({ onClose, onSave, existingBill }: AddBillModalProps) {
+export default function AddBillModal({ onClose, onSave, existingBill, dark = false }: AddBillModalProps) {
   const isEdit = !!existingBill
+  const t = dark ? DARK_MODAL : LIGHT_MODAL
 
   const [name, setName] = useState(existingBill?.name ?? '')
   const [amount, setAmount] = useState<number>(existingBill?.amount ?? 0)
@@ -323,13 +357,11 @@ export default function AddBillModal({ onClose, onSave, existingBill }: AddBillM
 
   const [error, setError] = useState<string | null>(null)
 
-  // Close on backdrop click
   const backdropRef = useRef<HTMLDivElement>(null)
   function handleBackdropClick(e: React.MouseEvent) {
     if (e.target === backdropRef.current) onClose()
   }
 
-  // Close on Escape
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
       if (e.key === 'Escape') onClose()
@@ -337,6 +369,26 @@ export default function AddBillModal({ onClose, onSave, existingBill }: AddBillM
     window.addEventListener('keydown', handleKey)
     return () => window.removeEventListener('keydown', handleKey)
   }, [onClose])
+
+  const fieldStyle: React.CSSProperties = {
+    background: t.cardAlt,
+    border: `1px solid ${t.border}`,
+    borderRadius: 8,
+    color: t.textPrimary,
+    padding: '10px 12px',
+    fontSize: 14,
+    width: '100%',
+    outline: 'none',
+    fontFamily: 'inherit',
+    boxSizing: 'border-box',
+  }
+
+  const labelStyle: React.CSSProperties = {
+    fontSize: 12,
+    color: t.textMuted,
+    marginBottom: 4,
+    display: 'block',
+  }
 
   function validate(): boolean {
     if (!name.trim()) { setError('Name is required'); return false }
@@ -384,15 +436,15 @@ export default function AddBillModal({ onClose, onSave, existingBill }: AddBillM
       onClick={handleBackdropClick}
       style={{
         position: 'fixed', inset: 0, zIndex: 400,
-        background: 'rgba(0,0,0,0.75)',
+        background: dark ? 'rgba(0,0,0,0.75)' : 'rgba(0,0,0,0.5)',
         display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
         padding: 0,
       }}
     >
       <div
         style={{
-          background: '#0f1923',
-          border: '1px solid #1e293b',
+          background: t.card,
+          border: `1px solid ${t.border}`,
           borderRadius: '16px 16px 0 0',
           width: '100%',
           maxWidth: 540,
@@ -405,16 +457,16 @@ export default function AddBillModal({ onClose, onSave, existingBill }: AddBillM
         <div style={{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           padding: '18px 20px 14px',
-          borderBottom: '1px solid #1e293b',
-          position: 'sticky', top: 0, background: '#0f1923', zIndex: 10,
+          borderBottom: `1px solid ${t.border}`,
+          position: 'sticky', top: 0, background: t.card, zIndex: 10,
         }}>
-          <span style={{ fontSize: 17, fontWeight: 700, color: '#f1f5f9' }}>
+          <span style={{ fontSize: 17, fontWeight: 700, color: t.textPrimary }}>
             {isEdit ? 'Edit bill' : 'Add bill'}
           </span>
           <button
             onClick={onClose}
             style={{
-              background: 'transparent', border: 'none', color: '#475569',
+              background: 'transparent', border: 'none', color: t.textMuted,
               cursor: 'pointer', padding: 6, display: 'flex', alignItems: 'center',
               minHeight: 44, minWidth: 44, justifyContent: 'center',
             }}
@@ -444,7 +496,7 @@ export default function AddBillModal({ onClose, onSave, existingBill }: AddBillM
             <div style={{ position: 'relative' }}>
               <span style={{
                 position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)',
-                color: '#94a3b8', fontSize: 14, pointerEvents: 'none',
+                color: t.textSecondary, fontSize: 14, pointerEvents: 'none',
               }}>£</span>
               <input
                 type="number"
@@ -463,7 +515,7 @@ export default function AddBillModal({ onClose, onSave, existingBill }: AddBillM
             <label style={labelStyle}>Category</label>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
               {CATEGORIES.map(c => (
-                <Pill key={c.value} active={category === c.value} onClick={() => setCategory(c.value)}>
+                <Pill key={c.value} active={category === c.value} onClick={() => setCategory(c.value)} t={t}>
                   {c.label}
                 </Pill>
               ))}
@@ -475,7 +527,7 @@ export default function AddBillModal({ onClose, onSave, existingBill }: AddBillM
             <label style={labelStyle}>Frequency</label>
             <div style={{ display: 'flex', gap: 6 }}>
               {(['monthly', 'weekly', 'one-off'] as const).map(f => (
-                <Pill key={f} active={frequency === f} onClick={() => setFrequency(f)}>
+                <Pill key={f} active={frequency === f} onClick={() => setFrequency(f)} t={t}>
                   {f.charAt(0).toUpperCase() + f.slice(1)}
                 </Pill>
               ))}
@@ -503,6 +555,7 @@ export default function AddBillModal({ onClose, onSave, existingBill }: AddBillM
                   year={startsYear}
                   onMonthChange={setStartsMonth}
                   onYearChange={setStartsYear}
+                  fieldStyle={fieldStyle}
                 />
               </div>
               <div>
@@ -511,14 +564,14 @@ export default function AddBillModal({ onClose, onSave, existingBill }: AddBillM
                   onClick={() => setHasEndDate(x => !x)}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 8,
-                    background: 'transparent', border: 'none', color: '#94a3b8',
+                    background: 'transparent', border: 'none', color: t.textSecondary,
                     cursor: 'pointer', padding: 0, fontSize: 13, fontFamily: 'inherit',
                   }}
                 >
                   <div style={{
                     width: 18, height: 18, borderRadius: 4,
-                    border: `2px solid ${hasEndDate ? '#3b82f6' : '#334155'}`,
-                    background: hasEndDate ? '#3b82f6' : 'transparent',
+                    border: `2px solid ${hasEndDate ? t.blue : t.border}`,
+                    background: hasEndDate ? t.blue : 'transparent',
                     flexShrink: 0,
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                   }}>
@@ -539,6 +592,7 @@ export default function AddBillModal({ onClose, onSave, existingBill }: AddBillM
                     year={endsYear}
                     onMonthChange={setEndsMonth}
                     onYearChange={setEndsYear}
+                    fieldStyle={fieldStyle}
                   />
                 </div>
               )}
@@ -549,7 +603,7 @@ export default function AddBillModal({ onClose, onSave, existingBill }: AddBillM
           {frequency === 'weekly' && (
             <div>
               <label style={labelStyle}>Days of week</label>
-              <WeekDayPicker selected={weekDays} onChange={setWeekDays} />
+              <WeekDayPicker selected={weekDays} onChange={setWeekDays} t={t} />
             </div>
           )}
 
@@ -557,16 +611,16 @@ export default function AddBillModal({ onClose, onSave, existingBill }: AddBillM
           {frequency === 'one-off' && (
             <div>
               <label style={labelStyle}>Dates</label>
-              <OneOffDates dates={dates} onChange={setDates} />
+              <OneOffDates dates={dates} onChange={setDates} t={t} fieldStyle={fieldStyle} />
             </div>
           )}
 
           {/* Error */}
           {error && (
             <div style={{
-              padding: '10px 14px', background: 'rgba(239,68,68,0.1)',
-              border: '1px solid rgba(239,68,68,0.3)', borderRadius: 8,
-              fontSize: 13, color: '#ef4444',
+              padding: '10px 14px', background: `${t.red}1a`,
+              border: `1px solid ${t.red}4d`, borderRadius: 8,
+              fontSize: 13, color: t.red,
             }}>
               {error}
             </div>
@@ -578,7 +632,7 @@ export default function AddBillModal({ onClose, onSave, existingBill }: AddBillM
               type="button"
               onClick={handleSave}
               style={{
-                flex: 1, background: '#22c55e', color: '#fff', border: 'none',
+                flex: 1, background: t.green, color: '#fff', border: 'none',
                 borderRadius: 8, padding: '12px', fontSize: 15, fontWeight: 700,
                 cursor: 'pointer', minHeight: 48,
               }}
@@ -589,7 +643,7 @@ export default function AddBillModal({ onClose, onSave, existingBill }: AddBillM
               type="button"
               onClick={onClose}
               style={{
-                flex: 1, background: '#1e293b', color: '#94a3b8', border: 'none',
+                flex: 1, background: t.border, color: t.textSecondary, border: 'none',
                 borderRadius: 8, padding: '12px', fontSize: 14, cursor: 'pointer',
                 minHeight: 48,
               }}
