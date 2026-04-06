@@ -2979,6 +2979,37 @@ function GenerateModal({
     return () => window.removeEventListener('keydown', handleKey)
   }, [onClose, status])
 
+  const LOCAL = 'http://localhost:3001'
+
+  const prompt = `You are a personal finance optimization AI. Analyze the following UK taxi driver's cash flow simulation and generate exactly 3 distinct proposals to improve their finances.
+
+${dump}
+
+CRITICAL: Output ONLY a raw JSON array — no markdown, no code fences, no explanation outside the JSON.
+
+Each proposal must use a different strategy:
+- Proposal 1: focus on spreading bills to reduce pot strain around payday
+- Proposal 2: focus on income/savings slider adjustments
+- Proposal 3: a hybrid approach combining both
+
+For bill day changes, use ONLY the exact bill IDs listed in the data above (e.g. "rent", "wifi", "gas"). Keep days between 1-28.
+
+Required JSON format:
+[
+  {
+    "id": "prop-1",
+    "title": "5 words max",
+    "description": "Two sentences: what changes and why it helps.",
+    "sliders": { "normalDayRate": 70, "billsPerDay": 22 },
+    "billDayOverrides": { "gas": 15, "electric": 18 },
+    "endPots": [120, 180, 200, 240, 280, 310, 340, 360, 400],
+    "redDayCount": 2,
+    "totalSavings": 480
+  }
+]
+
+Output the JSON array only. Start your response with [ and end with ].`
+
   // Auto-fire on mount
   useEffect(() => {
     generate()
@@ -2989,19 +3020,29 @@ function GenerateModal({
     setStatus('loading')
     setErrorMsg('')
     try {
-      const res = await fetch('/api/generate-proposals', {
+      const res = await fetch(`${LOCAL}/api/claude-sync`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dataDump: dump }),
+        body: JSON.stringify({ prompt, cwd: '/Users/admin/Projects/zorell/finances' }),
       })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }))
+        throw new Error(err.error ?? `HTTP ${res.status}`)
+      }
       const json = await res.json()
-      if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`)
-      if (!Array.isArray(json.proposals)) throw new Error('Invalid response format')
-      const proposals: AiProposal[] = (json.proposals as Record<string, unknown>[]).map((p, i) => ({
+      const rawOutput: string = json.output ?? ''
+
+      // Extract JSON array from output
+      const match = rawOutput.match(/\[[\s\S]*\]/)
+      if (!match) throw new Error('Claude did not return a JSON array. Try again.')
+      const parsed = JSON.parse(match[0]) as Record<string, unknown>[]
+      if (!Array.isArray(parsed)) throw new Error('Response was not an array')
+
+      const proposals: AiProposal[] = parsed.map((p, i) => ({
         id: String(p.id ?? `prop-${Date.now()}-${i}`),
         title: String(p.title ?? 'Untitled'),
         description: String(p.description ?? ''),
-        createdAt: String(p.createdAt ?? new Date().toISOString()),
+        createdAt: new Date().toISOString(),
         sliders: (p.sliders as Partial<Sliders>) ?? undefined,
         billDayOverrides: (p.billDayOverrides as Record<string, number>) ?? undefined,
         endPots: Array.isArray(p.endPots) ? (p.endPots as number[]) : [],
@@ -3012,7 +3053,12 @@ function GenerateModal({
       onLoad(proposals)
       onClose()
     } catch (e) {
-      setErrorMsg(e instanceof Error ? e.message : String(e))
+      const msg = e instanceof Error ? e.message : String(e)
+      const isOffline = msg.includes('fetch') || msg.includes('NetworkError') || msg.includes('Failed to fetch')
+      setErrorMsg(isOffline
+        ? 'Local server not running. Start it with: cd ~/Projects/zorell/local-server && node server.js'
+        : msg
+      )
       setStatus('error')
     }
   }
@@ -3064,10 +3110,10 @@ function GenerateModal({
               </div>
             </div>
             <div style={{ fontSize: 17, fontWeight: 700, color: theme.textPrimary, marginBottom: 8 }}>
-              Analysing your finances…
+              Running Claude Code…
             </div>
             <div style={{ fontSize: 13, color: theme.textSecondary, lineHeight: 1.6 }}>
-              Claude is running simulations across your bills, sliders, and income targets to find the best combos.
+              Analysing your bills, sliders and income targets to find the best combos. This uses your Claude Code subscription, not API credits.
             </div>
           </>
         )}
