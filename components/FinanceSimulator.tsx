@@ -159,6 +159,7 @@ interface DayData {
   isFirstDayOfCycle: boolean
   extraIncomeToday: { name: string; amount: number }[]
   weekendRate: number
+  billContrib: number
 }
 
 interface MonthOption {
@@ -505,6 +506,7 @@ function simulateCycle(
   weekendSavings?: number,
   balanceOverrides?: Record<string, number>,
   fuelOverride?: FuelOverride | null,
+  billContribOverrides?: Record<string, number>,
 ): { days: DayData[]; endPot: number; ringFenceAccumulated: number } {
   const { normalDayRate, offDayRate, billsPerDay, savingsOnExtra, offDaySplit } = sliders
   const paydayDay = settings.paydayDay ?? 8
@@ -664,69 +666,59 @@ function simulateCycle(
     const _weekendBillsPerDay = weekendBillsPerDay ?? billsPerDay
     const _weekendSavings = weekendSavings ?? savingsOnExtra
 
-    // Timing-corrected pot contribution: use yesterday's income rate
-    // (money earned yesterday is transferred into the bills account today)
+    // ── New bills pot logic ─────────────────────────────────────
+
+    // Step 1 — income_in for this day's pot calculation
+    let income_in: number
     if (i === 0) {
-      // First day of cycle: use today (payday — AFJ arrives today anyway)
-      if (!isRestDay) {
-        billsPot += isWorkedWeekend ? _weekendBillsPerDay : billsPerDay
-      }
+      // Payday: full picture — taxi rate + extras + AFJ + ring-fence carry-in
+      income_in = baseIncome + extraIncomeTotal + afjIn + carryInToday
     } else {
-      // Use yesterday's type to determine today's pot contribution
-      if (!prevIsRestDay) {
-        billsPot += prevIsWorkedWeekend ? _weekendBillsPerDay : billsPerDay
-      }
+      // Every other day: yesterday's taxi rate + extras only (no AFJ repeat)
+      income_in = prevBaseIncome + prevExtraIncome
     }
 
-    billsPot -= billsDueAmt
-    billsPot -= carCost
-    billsPot -= fuelCost
-    if (isPayday) {
-      billsPot += afjIn + carryInToday
-    }
+    // Step 2 — bill contribution for this day
+    const defaultContrib = isRestDay ? 0 : (isWorkedWeekend ? _weekendBillsPerDay : billsPerDay)
+    const billContrib = billContribOverrides?.[dateKey] ?? defaultContrib
 
-    // Apply balance override if present — replaces computed ending pot
+    // Step 3 — daily working amount (income minus bills/car/fuel out)
+    const totalBillsOut = billsDueAmt + carCost + fuelCost
+    let dailyWorking = income_in - totalBillsOut
+
+    // Step 4 — bills pot accumulates; contribution only deducted if positive
+    let contribDeducted = 0
+    if (dailyWorking > 0) {
+      contribDeducted = billContrib
+      dailyWorking -= billContrib
+    }
+    billsPot = billsPot + income_in - totalBillsOut - contribDeducted
+
+    // Step 5 — apply balance override if present
     if (balanceOverrides?.[dateKey] !== undefined) {
       billsPot = balanceOverrides[dateKey]
     }
 
-    let savingsToday: number
-    let spendingToday: number
-    let splitToday: number
+    // Step 6 — savings and spending from dailyWorking (post-contribution)
+    let savingsToday = 0
+    let spendingToday = 0
+    let splitToday = 0
 
-    // Universal savings/spending formula for all day types
-    // Source income: yesterday's earnings (timing-corrected); day 0 uses today
-    const srcBaseIncome = i === 0 ? baseIncome : prevBaseIncome
-    const srcExtraIncome = i === 0 ? extraIncomeTotal : prevExtraIncome
-    const srcIsWorkedWeekend = i === 0 ? isWorkedWeekend : prevIsWorkedWeekend
-    const srcIsSchoolHoliday = i === 0 ? isSchoolHolidayWeekday : prevIsSchoolHoliday
-    const srcIsRestDay = i === 0 ? isRestDay : prevIsRestDay
-    const srcBpd = srcIsRestDay ? 0 : (srcIsWorkedWeekend ? _weekendBillsPerDay : billsPerDay)
-
-    if (srcIsRestDay) {
-      savingsToday = 0
-      splitToday = 0
-      spendingToday = 0
-    } else {
-      let available = srcBaseIncome + srcExtraIncome - srcBpd
-
-      if (srcIsSchoolHoliday) {
+    if (dailyWorking > 0) {
+      if (isSchoolHolidayWeekday) {
         splitToday = offDaySplit
         ringFenceAccumulated += offDaySplit
-        available -= offDaySplit
-      } else {
-        splitToday = 0
+        dailyWorking -= offDaySplit
       }
-
-      const savingsMax = srcIsWorkedWeekend ? _weekendSavings : savingsOnExtra
-      savingsToday = Math.min(savingsMax, Math.max(0, available))
-      spendingToday = Math.max(0, available - savingsToday)
+      const savingsMax = isWorkedWeekend ? _weekendSavings : savingsOnExtra
+      savingsToday = Math.min(savingsMax, Math.max(0, dailyWorking))
+      spendingToday = Math.max(0, dailyWorking - savingsToday)
     }
 
     cumulativeSavings += savingsToday
     cumulativeSpending += spendingToday
 
-    // Store current day state for next iteration's look-back
+    // Step 7 — store previous day values for next iteration
     prevIsRestDay = isRestDay
     prevIsWorkedWeekend = isWorkedWeekend
     prevIsSchoolHoliday = isSchoolHolidayWeekday
@@ -774,6 +766,7 @@ function simulateCycle(
       isFirstDayOfCycle: isFirstDay,
       extraIncomeToday: extraIncomesToday.map(e => ({ name: e.name, amount: e.amount })),
       weekendRate,
+      billContrib,
     })
   }
 
@@ -1302,6 +1295,118 @@ function FuelFillModal({
   )
 }
 
+// ─── Contrib Card ───────────────────────────────────────────────
+
+function ContribCard({
+  dateKey,
+  value,
+  isOverridden,
+  onChange,
+  theme,
+}: {
+  dateKey: string
+  value: number
+  isOverridden: boolean
+  onChange: (dateKey: string, value: number | null) => void
+  theme: ThemeTokens
+}) {
+  const [editing, setEditing] = useState(false)
+  const [inputVal, setInputVal] = useState('')
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  function startEdit() {
+    setInputVal(String(Math.round(value)))
+    setEditing(true)
+  }
+
+  useEffect(() => {
+    if (editing && inputRef.current) {
+      inputRef.current.focus()
+      inputRef.current.select()
+    }
+  }, [editing])
+
+  function commit() {
+    const parsed = parseFloat(inputVal)
+    if (!isNaN(parsed) && inputVal.trim() !== '') {
+      onChange(dateKey, parsed)
+    }
+    setEditing(false)
+  }
+
+  function cancel() {
+    setEditing(false)
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === 'Enter') { e.preventDefault(); commit() }
+    if (e.key === 'Escape') { e.preventDefault(); cancel() }
+  }
+
+  const borderColor = isOverridden ? theme.amber : theme.border
+  const valueColor = isOverridden ? theme.amber : theme.textSecondary
+
+  return (
+    <div
+      onClick={!editing ? startEdit : undefined}
+      style={{
+        width: 58,
+        flexShrink: 0,
+        borderRadius: 10,
+        border: `1px solid ${borderColor}`,
+        background: theme.cardAlt,
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '6px 4px',
+        cursor: editing ? 'default' : 'pointer',
+        position: 'relative',
+      }}
+    >
+      {editing ? (
+        <input
+          ref={inputRef}
+          type="number"
+          inputMode="decimal"
+          value={inputVal}
+          onChange={e => setInputVal(e.target.value)}
+          onBlur={commit}
+          onKeyDown={handleKeyDown}
+          onClick={e => e.stopPropagation()}
+          style={{
+            width: '100%',
+            textAlign: 'center',
+            fontSize: 13,
+            border: 'none',
+            background: 'transparent',
+            color: theme.amber,
+            outline: 'none',
+            fontFamily: 'inherit',
+            fontWeight: 700,
+            padding: 0,
+          }}
+        />
+      ) : (
+        <>
+          <span style={{ fontSize: 8, color: theme.textMuted, marginBottom: 2, letterSpacing: '0.04em' }}>pot/d</span>
+          <span style={{ fontSize: 13, fontWeight: 600, color: valueColor, fontVariantNumeric: 'tabular-nums', lineHeight: 1 }}>
+            £{Math.round(value)}
+          </span>
+          {isOverridden && (
+            <span style={{
+              width: 5, height: 5, borderRadius: '50%',
+              background: theme.amber,
+              marginTop: 3,
+              display: 'block',
+            }} />
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
 // ─── Day Card ───────────────────────────────────────────────────
 
 function DayCard({
@@ -1310,12 +1415,18 @@ function DayCard({
   theme,
   onContextMenu,
   hasOverride,
+  billContrib,
+  onContribChange,
+  isContribOverridden,
 }: {
   day: DayData
   monthShort: string
   theme: ThemeTokens
   onContextMenu: (menu: DayCardMenuState) => void
   hasOverride: boolean
+  billContrib: number
+  onContribChange: (dateKey: string, value: number | null) => void
+  isContribOverridden?: boolean
 }) {
   const [expanded, setExpanded] = useState(false)
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -1374,26 +1485,28 @@ function DayCard({
   const spendingColor = theme.purple
 
   return (
-    <div
-      onClick={() => setExpanded(e => !e)}
-      onContextMenu={handleContextMenu}
-      onTouchStart={handleTouchStart}
-      onTouchMove={handleTouchMove}
-      onTouchEnd={cancelLongPress}
-      onTouchCancel={cancelLongPress}
-      style={{
-        background: day.isPayday ? `rgba(${theme === DARK ? '59,130,246' : '37,99,235'},0.08)` : theme.card,
-        border: `1px solid ${day.isPayday ? theme.blue : day.isPotNegative ? `${theme.red}66` : theme.border}`,
-        borderRadius: 10,
-        padding: '10px 12px',
-        marginBottom: 6,
-        cursor: 'pointer',
-        userSelect: 'none',
-        WebkitUserSelect: 'none',
-        opacity: cardOpacity,
-        outline: hasOverride ? `2px solid ${theme.amber}` : 'none',
-      }}
-    >
+    <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+      {/* Main day card */}
+      <div
+        onClick={() => setExpanded(e => !e)}
+        onContextMenu={handleContextMenu}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={cancelLongPress}
+        onTouchCancel={cancelLongPress}
+        style={{
+          flex: 1,
+          background: day.isPayday ? `rgba(${theme === DARK ? '59,130,246' : '37,99,235'},0.08)` : theme.card,
+          border: `1px solid ${day.isPayday ? theme.blue : day.isPotNegative ? `${theme.red}66` : theme.border}`,
+          borderRadius: 10,
+          padding: '10px 12px',
+          cursor: 'pointer',
+          userSelect: 'none',
+          WebkitUserSelect: 'none',
+          opacity: cardOpacity,
+          outline: hasOverride ? `2px solid ${theme.amber}` : 'none',
+        }}
+      >
       {/* Main row */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         {/* Date */}
@@ -1520,6 +1633,16 @@ function DayCard({
           )}
         </div>
       )}
+      </div>
+
+      {/* Contribution card — right side */}
+      <ContribCard
+        dateKey={dateKey}
+        value={billContrib}
+        isOverridden={isContribOverridden ?? false}
+        onChange={onContribChange}
+        theme={theme}
+      />
     </div>
   )
 }
@@ -2806,7 +2929,7 @@ function ProposalViewScreen({
       const { days, endPot, ringFenceAccumulated } = simulateCycle(
         m.month, m.year, sliders, settings, overrides, pot, prevRingFence,
         [], 80, customBills, new Set<string>(),
-        20, 10, {}, null,
+        20, 10, {}, null, {},
       )
       pot = endPot
       prevRingFence = ringFenceAccumulated
@@ -3047,6 +3170,9 @@ function ProposalViewScreen({
                   theme={theme}
                   onContextMenu={noopContextMenu}
                   hasOverride={false}
+                  billContrib={day.billContrib}
+                  onContribChange={() => {}}
+                  isContribOverridden={false}
                 />
               )
             })}
@@ -3314,6 +3440,9 @@ export default function FinanceSimulator() {
   // Fuel fill modal
   const [fuelFillModal, setFuelFillModal] = useState<FuelFillModalState | null>(null)
 
+  // Per-day bill contribution overrides: key = 'YYYY-MM-DD', value = contribution amount
+  const [billContribOverrides, setBillContribOverrides] = useState<Record<string, number>>({})
+
   // Compute today's date key once
   const todayKey = useMemo(() => todayDateKey(), [])
 
@@ -3407,6 +3536,12 @@ export default function FinanceSimulator() {
       const foRaw = localStorage.getItem('fin-fuel-override')
       if (foRaw) {
         try { setFuelOverride(JSON.parse(foRaw)) } catch { /* ignore */ }
+      }
+
+      // Load bill contribution overrides
+      const bcoRaw = localStorage.getItem('fin-bill-contrib-overrides')
+      if (bcoRaw) {
+        try { setBillContribOverrides(JSON.parse(bcoRaw)) } catch { /* ignore */ }
       }
 
     } catch { /* ignore */ }
@@ -3520,7 +3655,7 @@ export default function FinanceSimulator() {
         m.month, m.year, sliders, settings, overrides, pot, prevRingFenceAccumulated,
         wkdState.workedDays, wkdState.weekendRate, customBills, hiddenBillIds,
         wkdState.weekendBillsPerDay, wkdState.weekendSavings, balanceOverrides,
-        fuelOverride,
+        fuelOverride, billContribOverrides,
       )
       sims.push({ month: m, days, endPot, ringFenceAccumulated })
       pot = endPot
@@ -3530,7 +3665,7 @@ export default function FinanceSimulator() {
       prevRingFenceAccumulated = carryApplies ? ringFenceAccumulated : 0
     }
     return sims
-  }, [sliders, settings, billDayOverrides, allWeekendStates, customBills, hiddenBillIds, balanceOverrides, carryToggles, fuelOverride])
+  }, [sliders, settings, billDayOverrides, allWeekendStates, customBills, hiddenBillIds, balanceOverrides, carryToggles, fuelOverride, billContribOverrides])
 
   const currentSim = allSimulations[selectedMonthIdx]
   const selectedMonth = ALL_MONTHS[selectedMonthIdx]
@@ -3686,6 +3821,20 @@ export default function FinanceSimulator() {
 
   function handleSaveFuelOverride(override: FuelOverride) {
     setFuelOverride(override)
+  }
+
+  // Per-day bill contribution override handler
+  function handleContribChange(dateKey: string, value: number | null) {
+    setBillContribOverrides(prev => {
+      const next = { ...prev }
+      if (value === null) {
+        delete next[dateKey]
+      } else {
+        next[dateKey] = value
+      }
+      localStorage.setItem('fin-bill-contrib-overrides', JSON.stringify(next))
+      return next
+    })
   }
 
   // Dynamic slider maxes
@@ -4085,6 +4234,9 @@ export default function FinanceSimulator() {
                     theme={theme}
                     onContextMenu={handleDayCardContextMenu}
                     hasOverride={balanceOverrides[dk] !== undefined}
+                    billContrib={day.billContrib}
+                    onContribChange={handleContribChange}
+                    isContribOverridden={billContribOverrides[dk] !== undefined}
                   />
                 )
               })}
