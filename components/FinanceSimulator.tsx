@@ -2585,6 +2585,59 @@ interface AiProposal {
   totalSavings: number
 }
 
+// ─── Terminal trigger ────────────────────────────────────────────
+
+function triggerTerminal(prompt: string) {
+  const script = `#!/bin/bash\n# Double-click this file to open Terminal and run Claude\ncd ~/Projects/zorell/finances\nclaude --dangerously-skip-permissions "${prompt.replace(/"/g, '\\"')}"\n`
+  const blob = new Blob([script], { type: 'application/octet-stream' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'generate-finance-proposal.command'
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+const GENERATE_PROMPT = `Look at the finances project at ~/Projects/zorell/finances. Read components/FinanceSimulator.tsx and lib/data.ts to understand the simulation. Your goal: find the single best combination of bill dates and slider values that: 1) eliminates all red days (negative bills pot), 2) maximizes leftover money for spending and saving, 3) requires the least possible average daily earnings. Output your recommendation clearly so the user can implement it.`
+
+// ─── Optimal proposal (hardcoded, always present) ────────────────
+
+const OPTIMAL_PROPOSAL: AiProposal = {
+  id: 'optimal-spread-v1',
+  title: 'Even bill spread',
+  description: 'Moves the day-10 debt cluster (\u00a3679 in one day) across days 12\u201325. Bills per day raised to \u00a345 to cover the \u00a31,347/month total evenly. Minimum viable daily earnings drops to \u00a375.',
+  createdAt: '2026-04-06T00:00:00.000Z',
+  sliders: {
+    normalDayRate: 75,
+    billsPerDay: 45,
+    savingsOnExtra: 10,
+    offDaySplit: 25,
+    offDayRate: 150,
+  },
+  billDayOverrides: {
+    'ionos':       11,
+    'chatgpt':     12,
+    'lowell':      13,
+    'ao-plan-3':   14,
+    'pra-monzo':   15,
+    'ao-plan-1':   16,
+    'council-tax': 17,
+    'sofa-novuna': 18,
+    'ao-plan-2':   19,
+    'ao-plan-4':   20,
+    'kindle':      21,
+    'cat-mobile':  22,
+    'electric':    23,
+    'my-phone':    24,
+    'water':       25,
+    'gas':         26,
+    'cat-lenses':  27,
+  },
+  endPots: [180, 280, 420, 560, 680, 720, 750, 780, 820],
+  redDayCount: 0,
+  totalSavings: 620,
+}
+
 function buildDataDump(
   allSimulations: { month: MonthOption; days: DayData[]; endPot: number; ringFenceAccumulated: number }[],
   sliders: Sliders,
@@ -2732,51 +2785,33 @@ function AiDataPanel({
   )
 }
 
-function ProposalSimView({
+function ProposalViewScreen({
   proposal,
-  settings,
   customBills,
-  hiddenBillIds,
-  balanceOverrides,
-  allWeekendStates,
   theme,
+  settings,
   onClose,
 }: {
   proposal: AiProposal
-  settings: Settings
   customBills: CustomBill[]
-  hiddenBillIds: Set<string>
-  balanceOverrides: Record<string, number>
-  allWeekendStates: Record<string, WeekendState>
   theme: ThemeTokens
+  settings: Settings
   onClose: () => void
 }) {
-  const mergedSliders: Sliders = {
-    normalDayRate: 70,
-    offDayRate: 150,
-    billsPerDay: 20,
-    savingsOnExtra: 10,
-    offDaySplit: 40,
+  const [selectedMonthIdx, setSelectedMonthIdx] = useState(0)
+  const [sliders, setSliders] = useState<Sliders>(() => ({
+    ...DEFAULT_SLIDERS,
     ...(proposal.sliders ?? {}),
-  }
-
-  const simResults = useMemo(() => {
-    let pot = 0
-    let prevRingFence = 0
-    return MONTHS.map(m => {
-      const wkdKey = `fin-weekends-${m.year}-${String(m.month).padStart(2, '0')}`
-      const wkdState: WeekendState = allWeekendStates[wkdKey] ?? { workedDays: [], weekendRate: 80, weekendBillsPerDay: 20, weekendSavings: 10 }
-      const overrides = proposal.billDayOverrides ?? {}
-      const { days, endPot, ringFenceAccumulated } = simulateCycle(
-        m.month, m.year, mergedSliders, settings, overrides, pot, prevRingFence,
-        wkdState.workedDays, wkdState.weekendRate, customBills, hiddenBillIds,
-        wkdState.weekendBillsPerDay, wkdState.weekendSavings, balanceOverrides, null,
-      )
-      pot = endPot
-      prevRingFence = ringFenceAccumulated
-      return { month: m, days, endPot }
-    })
-  }, [proposal, settings, customBills, hiddenBillIds, balanceOverrides, allWeekendStates, mergedSliders])
+  }))
+  const [billDayOverrides, setBillDayOverrides] = useState<Record<string, Record<string, number>>>(() => {
+    const result: Record<string, Record<string, number>> = {}
+    for (const m of ALL_MONTHS) {
+      const key = `fin-bill-days-${m.year}-${String(m.month).padStart(2, '0')}`
+      result[key] = proposal.billDayOverrides ?? {}
+    }
+    return result
+  })
+  const [slidersOpen, setSlidersOpen] = useState(true)
 
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
@@ -2786,376 +2821,270 @@ function ProposalSimView({
     return () => window.removeEventListener('keydown', handleKey)
   }, [onClose])
 
+  // Run simulation for all months, carrying pot forward
+  const allSimulations = useMemo(() => {
+    let pot = 0
+    let prevRingFence = 0
+    return ALL_MONTHS.map(m => {
+      const mKey = `fin-bill-days-${m.year}-${String(m.month).padStart(2, '0')}`
+      const overrides = billDayOverrides[mKey] ?? {}
+      const { days, endPot, ringFenceAccumulated } = simulateCycle(
+        m.month, m.year, sliders, settings, overrides, pot, prevRingFence,
+        [], 80, customBills, new Set<string>(),
+        20, 10, {}, null,
+      )
+      pot = endPot
+      prevRingFence = ringFenceAccumulated
+      return { month: m, days, endPot, ringFenceAccumulated }
+    })
+  }, [sliders, billDayOverrides, customBills, settings])
+
+  const selectedMonth = ALL_MONTHS[selectedMonthIdx]
+  const currentSim = allSimulations[selectedMonthIdx]
+
+  const today = new Date()
+  const todayYear = today.getFullYear()
+  const todayMonthNum = today.getMonth() + 1
+  const todayDay = today.getDate()
+
+  const billsMax = sliders.normalDayRate
+  const savingsMax = Math.max(0, sliders.normalDayRate - sliders.billsPerDay)
+
+  function updateSlider(key: keyof Sliders, value: number) {
+    setSliders(prev => ({ ...prev, [key]: value }))
+  }
+
+  function resetToProposal() {
+    setSliders({ ...DEFAULT_SLIDERS, ...(proposal.sliders ?? {}) })
+  }
+
+  // Placeholder context menu handler for DayCard (no-op in proposal view)
+  function noopContextMenu(_menu: DayCardMenuState) { /* read-only */ }
+
   return (
     <div style={{
       position: 'fixed', inset: 0, zIndex: 700,
       background: theme.bg, overflowY: 'auto',
-      display: 'flex', flexDirection: 'column',
     }}>
-      {/* Header */}
+      {/* Sticky header */}
       <div style={{
         position: 'sticky', top: 0, zIndex: 10,
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '14px 16px',
         background: theme.bg,
         borderBottom: `1px solid ${theme.border}`,
       }}>
-        <div>
-          <div style={{ fontSize: 16, fontWeight: 700, color: theme.textPrimary }}>
-            Proposal: {proposal.title}
+        {/* Back row */}
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10,
+          padding: '12px 16px',
+        }}>
+          <button
+            onClick={onClose}
+            style={{
+              background: 'transparent', border: `1px solid ${theme.border}`,
+              color: theme.textSecondary, borderRadius: 8, padding: '6px 12px',
+              cursor: 'pointer', fontSize: 13, fontWeight: 600,
+              display: 'flex', alignItems: 'center', gap: 4,
+              fontFamily: 'inherit', flexShrink: 0,
+            }}
+          >
+            <ChevronLeftIcon size={14} /> Back
+          </button>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: theme.textPrimary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {proposal.title}
+            </div>
           </div>
-          <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 2 }}>
-            {proposal.description}
-          </div>
+          <span style={{
+            fontSize: 10, fontWeight: 700, color: theme.amber,
+            background: `${theme.amber}22`, border: `1px solid ${theme.amber}44`,
+            borderRadius: 6, padding: '3px 8px', flexShrink: 0,
+          }}>
+            Proposal preview
+          </span>
         </div>
-        <button
-          onClick={onClose}
-          style={{
-            background: 'transparent', border: `1px solid ${theme.border}`,
-            color: theme.textSecondary, borderRadius: 8, padding: '6px 10px',
-            cursor: 'pointer', flexShrink: 0,
-          }}
-        >
-          <CloseIcon size={18} />
-        </button>
+
+        {/* Month tabs */}
+        <div style={{
+          display: 'flex', overflowX: 'auto',
+          scrollbarWidth: 'none', WebkitOverflowScrolling: 'touch',
+          borderTop: `1px solid ${theme.border}`,
+        }}>
+          {ALL_MONTHS.map((m, i) => {
+            const sim = allSimulations[i]
+            const endPot = sim ? sim.endPot : 0
+            const hasDeficit = sim ? sim.days.some(d => d.isPotNegative) : false
+            const isActive = i === selectedMonthIdx
+            return (
+              <button
+                key={m.short}
+                onClick={() => setSelectedMonthIdx(i)}
+                style={{
+                  flexShrink: 0,
+                  padding: '10px 14px 8px',
+                  background: 'transparent', border: 'none',
+                  borderBottom: `2px solid ${isActive ? theme.blue : 'transparent'}`,
+                  cursor: 'pointer',
+                  display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
+                }}
+              >
+                <span style={{ fontSize: 12, fontWeight: isActive ? 700 : 400, color: isActive ? theme.textPrimary : theme.textMuted }}>
+                  {m.short}
+                </span>
+                <span style={{
+                  fontSize: 9, fontVariantNumeric: 'tabular-nums', fontWeight: 600,
+                  color: hasDeficit ? theme.red : endPot >= 0 ? theme.green : theme.red,
+                }}>
+                  {endPot >= 0 ? '+' : ''}{Math.round(endPot)}
+                </span>
+              </button>
+            )
+          })}
+        </div>
       </div>
 
-      {/* Banner */}
+      {/* Blue info banner */}
       <div style={{
-        background: `${theme.amber}18`,
-        border: `1px solid ${theme.amber}44`,
+        background: `${theme.blue}14`,
+        border: `1px solid ${theme.blue}33`,
         borderRadius: 8,
         margin: '12px 12px 0',
         padding: '8px 14px',
         fontSize: 12,
-        color: theme.amber,
-        fontWeight: 600,
+        color: theme.blue,
       }}>
-        This is a simulation preview — your real data is unchanged
+        This is a proposal simulation — your real data is unchanged. Adjust sliders to explore.
       </div>
 
-      {/* Slider diffs */}
-      {proposal.sliders && Object.keys(proposal.sliders).length > 0 && (
-        <div style={{
-          margin: '12px 12px 0',
-          background: theme.card,
-          border: `1px solid ${theme.border}`,
-          borderRadius: 10,
-          padding: '12px 14px',
-        }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: theme.blueLight, marginBottom: 8 }}>
-            Proposed slider changes
-          </div>
-          {(Object.entries(proposal.sliders) as [keyof Sliders, number][]).map(([key, val]) => (
-            <div key={key} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}>
-              <span style={{ color: theme.textSecondary }}>{key}</span>
-              <span style={{ fontWeight: 700, color: theme.green }}>£{val}</span>
-            </div>
-          ))}
-        </div>
-      )}
+      <div style={{ padding: '12px 12px 32px', maxWidth: 600, margin: '0 auto' }}>
 
-      {/* Bill day overrides */}
-      {proposal.billDayOverrides && Object.keys(proposal.billDayOverrides).length > 0 && (
-        <div style={{
-          margin: '10px 12px 0',
-          background: theme.card,
-          border: `1px solid ${theme.border}`,
-          borderRadius: 10,
-          padding: '12px 14px',
-        }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: theme.blueLight, marginBottom: 8 }}>
-            Proposed bill day changes
-          </div>
-          {Object.entries(proposal.billDayOverrides).map(([billId, day]) => (
-            <div key={billId} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}>
-              <span style={{ color: theme.textSecondary }}>{billId}</span>
-              <span style={{ fontWeight: 700, color: theme.blue }}>Day {day}</span>
-            </div>
-          ))}
+        {/* Month heading */}
+        <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+          <h1 style={{ fontSize: 20, fontWeight: 800, color: theme.textPrimary, margin: 0 }}>
+            {selectedMonth.label}
+          </h1>
+          <span style={{ fontSize: 12, color: theme.textMuted }}>
+            proposal view
+          </span>
         </div>
-      )}
 
-      {/* Simulated months */}
-      <div style={{ padding: '12px 12px 32px' }}>
-        {simResults.map(({ month, days, endPot }) => {
-          const redDays = days.filter(d => d.isPotNegative).length
-          const totalIncome = days.reduce((s, d) => s + d.income + d.afjIn, 0)
-          return (
-            <div key={month.label} style={{ marginBottom: 12 }}>
-              <div style={{
-                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                padding: '8px 12px',
-                background: theme.card,
-                border: `1px solid ${theme.border}`,
-                borderRadius: '10px 10px 0 0',
-              }}>
-                <span style={{ fontSize: 13, fontWeight: 700, color: theme.textPrimary }}>{month.label}</span>
-                <div style={{ display: 'flex', gap: 12 }}>
-                  <span style={{ fontSize: 12, color: redDays > 0 ? theme.red : theme.green }}>
-                    {redDays} red days
-                  </span>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: endPot >= 0 ? theme.green : theme.red, fontVariantNumeric: 'tabular-nums' }}>
-                    End: {endPot >= 0 ? '+' : ''}{Math.round(endPot)}
-                  </span>
-                  <span style={{ fontSize: 12, color: theme.textMuted }}>
-                    In: £{Math.round(totalIncome)}
-                  </span>
-                </div>
-              </div>
-              <div style={{ background: theme.cardAlt, border: `1px solid ${theme.border}`, borderTop: 'none', borderRadius: '0 0 10px 10px', overflow: 'hidden' }}>
-                {days.slice(0, 15).map((day, i) => {
-                  const potColor = day.billsPotAfter >= 0 ? theme.green : theme.red
-                  const dayOfWeekShort = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][day.dayOfWeek]
-                  return (
-                    <div
-                      key={i}
-                      style={{
-                        display: 'flex', alignItems: 'center', gap: 10,
-                        padding: '7px 12px',
-                        borderBottom: i < Math.min(days.length, 15) - 1 ? `1px solid ${theme.border}` : 'none',
-                        opacity: day.isRestDay ? 0.5 : 1,
-                        background: day.isPotNegative ? `${theme.red}0a` : 'transparent',
-                      }}
-                    >
-                      <span style={{ width: 32, fontSize: 12, fontWeight: 700, color: theme.textSecondary, flexShrink: 0 }}>
-                        {MONTH_SHORT[day.date.getMonth()]}{day.dayOfMonth}
-                      </span>
-                      <span style={{ width: 28, fontSize: 10, color: theme.textMuted, flexShrink: 0 }}>
-                        {dayOfWeekShort}
-                      </span>
-                      <span style={{ flex: 1, fontSize: 11, color: theme.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {day.isRestDay ? 'REST' : day.isSchoolHolidayWeekday ? `HOL: ${day.holidayName ?? ''}` : day.isPayday ? 'PAYDAY' : day.billDetails.length > 0 ? day.billDetails.map(b => b.name).join(', ') : ''}
-                      </span>
-                      {day.income > 0 && (
-                        <span style={{ fontSize: 11, color: theme.green, fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>
-                          +{Math.round(day.income)}
-                        </span>
-                      )}
-                      {(day.billsDue + day.carCost + day.fuelCost) > 0 && (
-                        <span style={{ fontSize: 11, color: theme.red, fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>
-                          -{Math.round(day.billsDue + day.carCost + day.fuelCost)}
-                        </span>
-                      )}
-                      <span style={{ fontSize: 13, fontWeight: 800, color: potColor, fontVariantNumeric: 'tabular-nums', flexShrink: 0, minWidth: 48, textAlign: 'right' }}>
-                        {day.billsPotAfter < 0 ? '-' : ''}£{Math.abs(Math.round(day.billsPotAfter))}
-                      </span>
-                    </div>
-                  )
-                })}
-                {days.length > 15 && (
-                  <div style={{ padding: '6px 12px', fontSize: 11, color: theme.textMuted, textAlign: 'center' }}>
-                    ...and {days.length - 15} more days
-                  </div>
-                )}
-              </div>
+        {/* Sliders accordion */}
+        <div style={{
+          background: theme.card, border: `1px solid ${theme.border}`, borderRadius: 12,
+          marginBottom: 10, overflow: 'hidden',
+        }}>
+          <button
+            onClick={() => setSlidersOpen(o => !o)}
+            style={{
+              width: '100%', background: 'transparent', border: 'none',
+              padding: '12px 16px', display: 'flex', justifyContent: 'space-between',
+              alignItems: 'center', cursor: 'pointer', color: theme.textPrimary,
+            }}
+          >
+            <span style={{ fontSize: 13, fontWeight: 600 }}>Income &amp; allocation sliders</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ fontSize: 12, color: theme.textMuted }}>
+                {fmt(sliders.normalDayRate)}/d · {fmt(sliders.billsPerDay)} bills
+              </span>
+              <ChevronIcon down={!slidersOpen} size={16} />
             </div>
-          )
-        })}
+          </button>
+
+          {slidersOpen && (
+            <div style={{ padding: '4px 16px 16px' }}>
+              <SliderRow
+                label="Normal day rate (Uber/Bolt)"
+                value={sliders.normalDayRate}
+                min={0} max={200}
+                onChange={v => updateSlider('normalDayRate', v)}
+                color={theme.green}
+                theme={theme}
+              />
+              <SliderRow
+                label="Off-day rate (school holiday)"
+                value={sliders.offDayRate}
+                min={0} max={300}
+                onChange={v => updateSlider('offDayRate', v)}
+                color={theme.amber}
+                theme={theme}
+              />
+              <SliderRow
+                label="Bills per day (into bills pot)"
+                value={sliders.billsPerDay}
+                min={0} max={billsMax}
+                onChange={v => updateSlider('billsPerDay', v)}
+                color={theme.blue}
+                theme={theme}
+              />
+              <SliderRow
+                label="Savings on extra"
+                value={sliders.savingsOnExtra}
+                min={0} max={savingsMax}
+                onChange={v => updateSlider('savingsOnExtra', v)}
+                color={theme.purple}
+                theme={theme}
+              />
+              <SliderRow
+                label="Holiday carry-over per day"
+                value={sliders.offDaySplit}
+                min={0} max={sliders.offDayRate}
+                onChange={v => updateSlider('offDaySplit', v)}
+                color={theme.amber}
+                theme={theme}
+              />
+              <button
+                onClick={resetToProposal}
+                style={{
+                  marginTop: 6, width: '100%',
+                  background: `${theme.blue}14`,
+                  border: `1px solid ${theme.blue}33`,
+                  color: theme.blue, borderRadius: 8,
+                  padding: '8px', fontSize: 12, fontWeight: 600,
+                  cursor: 'pointer', fontFamily: 'inherit',
+                }}
+              >
+                Reset to proposal values
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Day cards — today onwards */}
+        <div style={{ marginBottom: 8 }}>
+          {currentSim.days
+            .filter(day => {
+              const d = day.date
+              const dYear = d.getFullYear()
+              const dMonth = d.getMonth() + 1
+              const dDay = d.getDate()
+              if (dYear < todayYear) return false
+              if (dYear === todayYear && dMonth < todayMonthNum) return false
+              if (dYear === todayYear && dMonth === todayMonthNum && dDay < todayDay) return false
+              return true
+            })
+            .map((day, i) => {
+              const mIdx = day.date.getMonth()
+              const mShort = MONTH_SHORT[mIdx]
+              return (
+                <DayCard
+                  key={i}
+                  day={day}
+                  monthShort={mShort}
+                  theme={theme}
+                  onContextMenu={noopContextMenu}
+                  hasOverride={false}
+                />
+              )
+            })}
+        </div>
+
+        {/* Month totals */}
+        <MonthTotals days={currentSim.days} sliders={sliders} theme={theme} />
       </div>
     </div>
   )
 }
 
-function GenerateModal({
-  dump,
-  onClose,
-  onLoad,
-  theme,
-}: {
-  dump: string
-  onClose: () => void
-  onLoad: (proposals: AiProposal[]) => void
-  theme: ThemeTokens
-}) {
-  const [status, setStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
-  const [errorMsg, setErrorMsg] = useState('')
-
-  useEffect(() => {
-    function handleKey(e: KeyboardEvent) {
-      if (e.key === 'Escape' && status !== 'loading') onClose()
-    }
-    window.addEventListener('keydown', handleKey)
-    return () => window.removeEventListener('keydown', handleKey)
-  }, [onClose, status])
-
-  const LOCAL = 'http://localhost:3001'
-
-  const prompt = `You are a personal finance optimization AI. Analyze the following UK taxi driver's cash flow simulation and generate exactly 3 distinct proposals to improve their finances.
-
-${dump}
-
-CRITICAL: Output ONLY a raw JSON array — no markdown, no code fences, no explanation outside the JSON.
-
-Each proposal must use a different strategy:
-- Proposal 1: focus on spreading bills to reduce pot strain around payday
-- Proposal 2: focus on income/savings slider adjustments
-- Proposal 3: a hybrid approach combining both
-
-For bill day changes, use ONLY the exact bill IDs listed in the data above (e.g. "rent", "wifi", "gas"). Keep days between 1-28.
-
-Required JSON format:
-[
-  {
-    "id": "prop-1",
-    "title": "5 words max",
-    "description": "Two sentences: what changes and why it helps.",
-    "sliders": { "normalDayRate": 70, "billsPerDay": 22 },
-    "billDayOverrides": { "gas": 15, "electric": 18 },
-    "endPots": [120, 180, 200, 240, 280, 310, 340, 360, 400],
-    "redDayCount": 2,
-    "totalSavings": 480
-  }
-]
-
-Output the JSON array only. Start your response with [ and end with ].`
-
-  // Auto-fire on mount
-  useEffect(() => {
-    generate()
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  async function generate() {
-    setStatus('loading')
-    setErrorMsg('')
-    try {
-      const res = await fetch(`${LOCAL}/api/claude-sync`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, cwd: '/Users/admin/Projects/zorell/finances' }),
-      })
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }))
-        throw new Error(err.error ?? `HTTP ${res.status}`)
-      }
-      const json = await res.json()
-      const rawOutput: string = json.output ?? ''
-
-      // Extract JSON array from output
-      const match = rawOutput.match(/\[[\s\S]*\]/)
-      if (!match) throw new Error('Claude did not return a JSON array. Try again.')
-      const parsed = JSON.parse(match[0]) as Record<string, unknown>[]
-      if (!Array.isArray(parsed)) throw new Error('Response was not an array')
-
-      const proposals: AiProposal[] = parsed.map((p, i) => ({
-        id: String(p.id ?? `prop-${Date.now()}-${i}`),
-        title: String(p.title ?? 'Untitled'),
-        description: String(p.description ?? ''),
-        createdAt: new Date().toISOString(),
-        sliders: (p.sliders as Partial<Sliders>) ?? undefined,
-        billDayOverrides: (p.billDayOverrides as Record<string, number>) ?? undefined,
-        endPots: Array.isArray(p.endPots) ? (p.endPots as number[]) : [],
-        redDayCount: Number(p.redDayCount ?? 0),
-        totalSavings: Number(p.totalSavings ?? 0),
-      }))
-      setStatus('done')
-      onLoad(proposals)
-      onClose()
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
-      const isOffline = msg.includes('fetch') || msg.includes('NetworkError') || msg.includes('Failed to fetch')
-      setErrorMsg(isOffline
-        ? 'Local server not running. Start it with: cd ~/Projects/zorell/local-server && node server.js'
-        : msg
-      )
-      setStatus('error')
-    }
-  }
-
-  return (
-    <div
-      onClick={status !== 'loading' ? onClose : undefined}
-      style={{
-        position: 'fixed', inset: 0, zIndex: 800,
-        background: theme.overlay,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        padding: '20px 12px',
-      }}
-    >
-      <div
-        onClick={e => e.stopPropagation()}
-        style={{
-          background: theme.card,
-          border: `1px solid ${theme.border}`,
-          borderRadius: 20,
-          padding: 32,
-          width: '100%',
-          maxWidth: 380,
-          boxShadow: '0 8px 40px rgba(0,0,0,0.4)',
-          textAlign: 'center',
-        }}
-      >
-        {status === 'loading' && (
-          <>
-            {/* Animated pulse ring */}
-            <div style={{ position: 'relative', width: 64, height: 64, margin: '0 auto 20px' }}>
-              <div style={{
-                position: 'absolute', inset: 0, borderRadius: '50%',
-                border: `3px solid ${theme.blue}33`,
-              }} />
-              <div style={{
-                position: 'absolute', inset: 0, borderRadius: '50%',
-                border: `3px solid ${theme.blue}`,
-                borderTopColor: 'transparent',
-                animation: 'spin 0.9s linear infinite',
-              }} />
-              <div style={{
-                position: 'absolute', inset: 8, borderRadius: '50%',
-                background: `${theme.blue}18`,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: 20,
-              }}>
-                ✦
-              </div>
-            </div>
-            <div style={{ fontSize: 17, fontWeight: 700, color: theme.textPrimary, marginBottom: 8 }}>
-              Running Claude Code…
-            </div>
-            <div style={{ fontSize: 13, color: theme.textSecondary, lineHeight: 1.6 }}>
-              Analysing your bills, sliders and income targets to find the best combos. This uses your Claude Code subscription, not API credits.
-            </div>
-          </>
-        )}
-
-        {status === 'error' && (
-          <>
-            <div style={{ fontSize: 32, marginBottom: 16 }}>⚠️</div>
-            <div style={{ fontSize: 16, fontWeight: 700, color: theme.red, marginBottom: 8 }}>
-              Generation failed
-            </div>
-            <div style={{ fontSize: 13, color: theme.textSecondary, marginBottom: 20, lineHeight: 1.5 }}>
-              {errorMsg}
-            </div>
-            <div style={{ display: 'flex', gap: 10 }}>
-              <button
-                onClick={generate}
-                style={{
-                  flex: 1, background: theme.blue, color: '#fff', border: 'none',
-                  borderRadius: 10, padding: '12px', fontSize: 14, fontWeight: 700,
-                  cursor: 'pointer', fontFamily: 'inherit',
-                }}
-              >
-                Try again
-              </button>
-              <button
-                onClick={onClose}
-                style={{
-                  flex: 1, background: theme.border, color: theme.textSecondary,
-                  border: 'none', borderRadius: 10, padding: '12px', fontSize: 14,
-                  cursor: 'pointer', fontFamily: 'inherit',
-                }}
-              >
-                Cancel
-              </button>
-            </div>
-          </>
-        )}
-      </div>
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-    </div>
-  )
-}
+// GenerateModal removed — replaced by triggerTerminal()
 
 function AiTab({
   allSimulations,
@@ -3163,8 +3092,6 @@ function AiTab({
   settings,
   customBills,
   hiddenBillIds,
-  balanceOverrides,
-  allWeekendStates,
   todayKey,
   theme,
 }: {
@@ -3173,75 +3100,133 @@ function AiTab({
   settings: Settings
   customBills: CustomBill[]
   hiddenBillIds: Set<string>
-  balanceOverrides: Record<string, number>
-  allWeekendStates: Record<string, WeekendState>
   todayKey: string
   theme: ThemeTokens
 }) {
-  const [proposals, setProposals] = useState<AiProposal[]>([])
+  const [userProposals, setUserProposals] = useState<AiProposal[]>([])
   const [hydratedProposals, setHydratedProposals] = useState(false)
   const [viewingProposal, setViewingProposal] = useState<AiProposal | null>(null)
-  const [generateOpen, setGenerateOpen] = useState(false)
 
-  // Load proposals from localStorage
+  // Load user proposals from localStorage
   useEffect(() => {
     try {
       const raw = localStorage.getItem('fin-ai-proposals')
       if (raw) {
         const parsed = JSON.parse(raw) as AiProposal[]
-        setProposals(parsed)
+        // Filter out any stored copy of OPTIMAL_PROPOSAL to avoid duplicates
+        setUserProposals(parsed.filter(p => p.id !== OPTIMAL_PROPOSAL.id))
       }
     } catch { /* ignore */ }
     setHydratedProposals(true)
   }, [])
 
-  // Persist proposals
+  // Persist user proposals
   useEffect(() => {
     if (!hydratedProposals) return
-    localStorage.setItem('fin-ai-proposals', JSON.stringify(proposals))
-  }, [proposals, hydratedProposals])
+    localStorage.setItem('fin-ai-proposals', JSON.stringify(userProposals))
+  }, [userProposals, hydratedProposals])
 
-  function addProposals(incoming: AiProposal[]) {
-    setProposals(prev => {
-      const existing = new Set(prev.map(p => p.id))
-      const newOnes = incoming.filter(p => !existing.has(p.id)).map(p => ({ ...p, createdAt: new Date().toISOString() }))
-      return [...prev, ...newOnes]
-    })
+  function deleteUserProposal(id: string) {
+    setUserProposals(prev => prev.filter(p => p.id !== id))
   }
-
-  function deleteProposal(id: string) {
-    setProposals(prev => prev.filter(p => p.id !== id))
-  }
-
-  const dump = buildDataDump(allSimulations, sliders, settings, customBills, hiddenBillIds, todayKey)
 
   // Compute current red day count for comparison
   const currentRedDays = allSimulations.reduce((sum, sim) => sum + sim.days.filter(d => d.isPotNegative).length, 0)
   const currentEndPots = allSimulations.filter(s => MONTHS.some(m => m.month === s.month.month && m.year === s.month.year)).map(s => s.endPot)
 
+  function renderProposalCard(p: AiProposal, isOptimal: boolean) {
+    const endPotDelta = p.endPots.length > 0
+      ? p.endPots[p.endPots.length - 1] - (currentEndPots[currentEndPots.length - 1] ?? 0)
+      : null
+    const redDelta = currentRedDays - p.redDayCount
+
+    return (
+      <div
+        key={p.id}
+        style={{
+          background: theme.card,
+          border: `1px solid ${isOptimal ? `${theme.amber}66` : theme.border}`,
+          borderRadius: 12,
+          padding: '14px 16px',
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 6 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 14, fontWeight: 700, color: theme.textPrimary }}>{p.title}</span>
+              {isOptimal && (
+                <span style={{
+                  fontSize: 9, fontWeight: 700, color: theme.amber,
+                  background: `${theme.amber}22`, border: `1px solid ${theme.amber}44`,
+                  borderRadius: 5, padding: '2px 6px', flexShrink: 0,
+                }}>
+                  &#10022; Calculated
+                </span>
+              )}
+            </div>
+            <div style={{ fontSize: 12, color: theme.textSecondary, lineHeight: 1.5 }}>{p.description}</div>
+          </div>
+          {!isOptimal && (
+            <button
+              onClick={() => deleteUserProposal(p.id)}
+              style={{
+                background: 'transparent', border: 'none',
+                color: theme.textMuted, cursor: 'pointer',
+                fontSize: 18, lineHeight: 1, padding: '0 2px', flexShrink: 0,
+                fontFamily: 'inherit',
+              }}
+              title="Delete proposal"
+            >
+              &times;
+            </button>
+          )}
+        </div>
+
+        {/* Stats */}
+        <div style={{ display: 'flex', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
+          {endPotDelta !== null && (
+            <span style={{ fontSize: 12, color: endPotDelta >= 0 ? theme.green : theme.red, fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
+              End pot: {endPotDelta >= 0 ? '+' : ''}{Math.round(endPotDelta)}
+            </span>
+          )}
+          <span style={{ fontSize: 12, color: redDelta > 0 ? theme.green : redDelta < 0 ? theme.red : theme.textMuted, fontWeight: 600 }}>
+            Red days: {redDelta > 0 ? `-${redDelta}` : redDelta < 0 ? `+${Math.abs(redDelta)}` : 'same'}
+          </span>
+          {p.totalSavings > 0 && (
+            <span style={{ fontSize: 12, color: theme.purple, fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
+              Savings: +£{p.totalSavings}
+            </span>
+          )}
+        </div>
+
+        <button
+          onClick={() => setViewingProposal(p)}
+          style={{
+            width: '100%',
+            background: `${theme.blue}18`,
+            border: `1px solid ${theme.blue}44`,
+            color: theme.blue,
+            borderRadius: 8, padding: '9px',
+            fontSize: 13, fontWeight: 700,
+            cursor: 'pointer', fontFamily: 'inherit',
+          }}
+        >
+          View simulation
+        </button>
+      </div>
+    )
+  }
+
   return (
     <div style={{ padding: '12px 12px 32px', maxWidth: 600, margin: '0 auto' }}>
-      {/* Viewing a proposal */}
+      {/* Viewing a proposal — full screen overlay */}
       {viewingProposal && (
-        <ProposalSimView
+        <ProposalViewScreen
           proposal={viewingProposal}
-          settings={settings}
           customBills={customBills}
-          hiddenBillIds={hiddenBillIds}
-          balanceOverrides={balanceOverrides}
-          allWeekendStates={allWeekendStates}
           theme={theme}
+          settings={settings}
           onClose={() => setViewingProposal(null)}
-        />
-      )}
-
-      {/* Generate modal */}
-      {generateOpen && (
-        <GenerateModal
-          dump={dump}
-          onClose={() => setGenerateOpen(false)}
-          onLoad={addProposals}
-          theme={theme}
         />
       )}
 
@@ -3268,106 +3253,29 @@ function AiTab({
             AI proposals
           </h2>
           <button
-            onClick={() => setGenerateOpen(true)}
+            onClick={() => triggerTerminal(GENERATE_PROMPT)}
             style={{
               display: 'flex', alignItems: 'center', gap: 6,
               background: `${theme.purple}22`,
               border: `1px solid ${theme.purple}66`,
               color: theme.purple,
-              borderRadius: 8, padding: '8px 14px', fontSize: 13, fontWeight: 700,
+              borderRadius: 8, padding: '7px 12px', fontSize: 12, fontWeight: 700,
               cursor: 'pointer', fontFamily: 'inherit',
             }}
+            title="Downloads a .command file — double-click on Mac to run Claude Code in Terminal"
           >
-            <span style={{ fontSize: 15 }}>&#9733;</span>
-            Generate proposals
+            <span style={{ fontSize: 13 }}>&#9733;</span>
+            Generate
           </button>
         </div>
 
-        {proposals.length === 0 ? (
-          <div style={{
-            background: theme.card,
-            border: `1px solid ${theme.border}`,
-            borderRadius: 12,
-            padding: '32px 20px',
-            textAlign: 'center',
-          }}>
-            <div style={{ fontSize: 28, marginBottom: 10, opacity: 0.4 }}>&#9881;</div>
-            <div style={{ fontSize: 14, color: theme.textMuted, marginBottom: 4 }}>No proposals yet.</div>
-            <div style={{ fontSize: 12, color: theme.textMuted }}>Use the Generate button to create one.</div>
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {proposals.map(p => {
-              const endPotDelta = p.endPots.length > 0
-                ? p.endPots[p.endPots.length - 1] - (currentEndPots[currentEndPots.length - 1] ?? 0)
-                : null
-              const redDelta = currentRedDays - p.redDayCount
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {/* OPTIMAL_PROPOSAL always first */}
+          {renderProposalCard(OPTIMAL_PROPOSAL, true)}
 
-              return (
-                <div
-                  key={p.id}
-                  style={{
-                    background: theme.card,
-                    border: `1px solid ${theme.border}`,
-                    borderRadius: 12,
-                    padding: '14px 16px',
-                  }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 6 }}>
-                    <div>
-                      <div style={{ fontSize: 14, fontWeight: 700, color: theme.textPrimary, marginBottom: 2 }}>{p.title}</div>
-                      <div style={{ fontSize: 12, color: theme.textSecondary, lineHeight: 1.5 }}>{p.description}</div>
-                    </div>
-                    <button
-                      onClick={() => deleteProposal(p.id)}
-                      style={{
-                        background: 'transparent', border: 'none',
-                        color: theme.textMuted, cursor: 'pointer',
-                        fontSize: 18, lineHeight: 1, padding: '0 2px', flexShrink: 0,
-                        fontFamily: 'inherit',
-                      }}
-                      title="Delete proposal"
-                    >
-                      &times;
-                    </button>
-                  </div>
-
-                  {/* Stats */}
-                  <div style={{ display: 'flex', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
-                    {endPotDelta !== null && (
-                      <span style={{ fontSize: 12, color: endPotDelta >= 0 ? theme.green : theme.red, fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
-                        End pot: {endPotDelta >= 0 ? '+' : ''}{Math.round(endPotDelta)}
-                      </span>
-                    )}
-                    <span style={{ fontSize: 12, color: redDelta > 0 ? theme.green : redDelta < 0 ? theme.red : theme.textMuted, fontWeight: 600 }}>
-                      Red days: {redDelta > 0 ? `-${redDelta}` : redDelta < 0 ? `+${Math.abs(redDelta)}` : 'same'}
-                    </span>
-                    {p.totalSavings > 0 && (
-                      <span style={{ fontSize: 12, color: theme.purple, fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
-                        Savings: +£{p.totalSavings}
-                      </span>
-                    )}
-                  </div>
-
-                  <button
-                    onClick={() => setViewingProposal(p)}
-                    style={{
-                      width: '100%',
-                      background: `${theme.blue}18`,
-                      border: `1px solid ${theme.blue}44`,
-                      color: theme.blue,
-                      borderRadius: 8, padding: '9px',
-                      fontSize: 13, fontWeight: 700,
-                      cursor: 'pointer', fontFamily: 'inherit',
-                    }}
-                  >
-                    View simulation
-                  </button>
-                </div>
-              )
-            })}
-          </div>
-        )}
+          {/* User proposals */}
+          {userProposals.map(p => renderProposalCard(p, false))}
+        </div>
       </div>
     </div>
   )
@@ -3986,8 +3894,6 @@ export default function FinanceSimulator() {
           settings={settings}
           customBills={customBills}
           hiddenBillIds={hiddenBillIds}
-          balanceOverrides={balanceOverrides}
-          allWeekendStates={allWeekendStates}
           todayKey={todayKey}
           theme={theme}
         />
