@@ -96,6 +96,13 @@ interface Settings {
   afjDailyRate: number
   extraIncomes: ExtraIncome[]
   darkMode: boolean
+  paydayDay: number
+  weekendDailyMiles: number
+}
+
+interface FuelOverride {
+  dateKey: string     // 'YYYY-MM-DD' — the day this was set
+  milesLeft: number   // miles of fuel remaining on that day
 }
 
 interface CarChange {
@@ -188,6 +195,13 @@ interface BalanceOverrideModalState {
   currentValue: number
 }
 
+// Fuel fill modal state
+interface FuelFillModalState {
+  open: boolean
+  dateKey: string
+  dateLabel: string
+}
+
 // Day card context menu state
 interface DayCardMenuState {
   x: number
@@ -211,6 +225,11 @@ const MONTHS: MonthOption[] = [
   { month: 12, year: 2026, label: 'December 2026', short: 'Dec' },
 ]
 
+const ALL_MONTHS: MonthOption[] = [
+  { month: 3, year: 2026, label: 'March 2026', short: 'Mar' },
+  ...MONTHS,
+]
+
 const DEFAULT_SETTINGS: Settings = {
   carWeeklyRent: 100,
   tankPrice: 70,
@@ -229,6 +248,8 @@ const DEFAULT_SETTINGS: Settings = {
   afjDailyRate: 85,
   extraIncomes: [],
   darkMode: false,
+  paydayDay: 8,
+  weekendDailyMiles: 60,
 }
 
 const DEFAULT_SLIDERS: Sliders = {
@@ -483,17 +504,20 @@ function simulateCycle(
   weekendBillsPerDay?: number,
   weekendSavings?: number,
   balanceOverrides?: Record<string, number>,
+  fuelOverride?: FuelOverride | null,
 ): { days: DayData[]; endPot: number; ringFenceAccumulated: number } {
   const { normalDayRate, offDayRate, billsPerDay, savingsOnExtra, offDaySplit } = sliders
+  const paydayDay = settings.paydayDay ?? 8
+  const weekendDailyMiles = settings.weekendDailyMiles ?? 60
 
   const cycleDays: Date[] = []
   const daysInMonth = new Date(year, month, 0).getDate()
-  for (let d = 8; d <= daysInMonth; d++) {
+  for (let d = paydayDay; d <= daysInMonth; d++) {
     cycleDays.push(new Date(year, month - 1, d))
   }
   const nextMonth = month === 12 ? 1 : month + 1
   const nextYear = month === 12 ? year + 1 : year
-  for (let d = 1; d <= 7; d++) {
+  for (let d = 1; d <= paydayDay - 1; d++) {
     cycleDays.push(new Date(nextYear, nextMonth - 1, d))
   }
 
@@ -504,21 +528,50 @@ function simulateCycle(
   const car = getCarSettings(month, year, settings)
   const carRentDays = new Set<string>()
   for (let i = 0; i < 4; i++) {
-    const d = new Date(year, month - 1, 8 + i * 7)
+    const d = new Date(year, month - 1, paydayDay + i * 7)
     if (d.getMonth() + 1 === month) {
       carRentDays.add(d.toISOString().slice(0, 10))
     }
   }
 
   const fuelFillDays = new Set<string>()
+  const cycleStart = new Date(year, month - 1, paydayDay).getTime()
+  const cycleEnd = new Date(nextYear, nextMonth - 1, paydayDay - 1).getTime()
   for (let i = 0; i < 31; i++) {
-    const d = new Date(year, month - 1, 8 + i * car.fillEveryDays)
-    const cycleStart = new Date(year, month - 1, 8).getTime()
-    const cycleEnd = new Date(nextYear, nextMonth - 1, 7).getTime()
+    const d = new Date(year, month - 1, paydayDay + i * car.fillEveryDays)
     if (d.getTime() >= cycleStart && d.getTime() <= cycleEnd) {
       fuelFillDays.add(d.toISOString().slice(0, 10))
     } else if (d.getTime() > cycleEnd) {
       break
+    }
+  }
+
+  // Dynamic fuel override: replace static fills from override date onwards
+  if (fuelOverride) {
+    const overrideDateStr = fuelOverride.dateKey
+    // Keep static fills for days before the override date
+    const staticFills = new Set(fuelFillDays)
+    fuelFillDays.clear()
+    for (const dateStr of staticFills) {
+      if (dateStr < overrideDateStr) fuelFillDays.add(dateStr)
+    }
+    // Dynamic fill from override date
+    let milesLeft = fuelOverride.milesLeft
+    const fullTank = car.fillEveryDays * car.dailyMiles
+    for (const date of cycleDays) {
+      const dateYear = date.getFullYear()
+      const dateMonth = date.getMonth() + 1
+      const dateDom = date.getDate()
+      const dateKey = `${dateYear}-${String(dateMonth).padStart(2, '0')}-${String(dateDom).padStart(2, '0')}`
+      if (dateKey < overrideDateStr) continue
+      const isWkd = isWeekend(date)
+      const isWorked = workedWeekendDays.includes(dateDom)
+      const milesConsumed = (isWkd && !isWorked) ? weekendDailyMiles : car.dailyMiles
+      milesLeft -= milesConsumed
+      if (milesLeft <= 0) {
+        fuelFillDays.add(dateKey)
+        milesLeft = fullTank - Math.abs(milesLeft)
+      }
     }
   }
 
@@ -592,7 +645,7 @@ function simulateCycle(
     }
     const income = baseIncome + extraIncomeTotal
 
-    const isPayday = dom === 8 && dateMonth === month
+    const isPayday = dom === paydayDay && dateMonth === month
     const afjIn = isPayday ? afjAmount : 0
     const carryInToday = isPayday ? ringFenceCarryIn : 0
 
@@ -606,6 +659,7 @@ function simulateCycle(
     }
     billsPot -= billsDueAmt
     billsPot -= carCost
+    billsPot -= fuelCost
     if (isPayday) {
       billsPot += afjIn + carryInToday
     }
@@ -949,12 +1003,14 @@ function DayCardContextMenu({
   menu,
   onClose,
   onSetBalance,
+  onFuelFill,
   isToday,
   theme,
 }: {
   menu: DayCardMenuState
   onClose: () => void
   onSetBalance: () => void
+  onFuelFill: () => void
   isToday: boolean
   theme: ThemeTokens
 }) {
@@ -977,12 +1033,21 @@ function DayCardContextMenu({
     }
   }, [onClose])
 
+  const btnStyle = (enabled: boolean): React.CSSProperties => ({
+    display: 'block', width: '100%', textAlign: 'left',
+    background: 'transparent', border: 'none',
+    color: enabled ? theme.textPrimary : theme.textMuted,
+    fontSize: 14, padding: '12px 16px', cursor: enabled ? 'pointer' : 'default',
+    fontFamily: 'inherit', minHeight: 44, borderRadius: 0,
+    opacity: enabled ? 1 : 0.6,
+  })
+
   return (
     <div
       ref={menuRef}
       style={{
         position: 'fixed',
-        top: Math.min(menu.y, window.innerHeight - 80),
+        top: Math.min(menu.y, window.innerHeight - 120),
         left: Math.min(menu.x, window.innerWidth - 200),
         zIndex: 500,
         background: theme.borderStrong,
@@ -996,19 +1061,178 @@ function DayCardContextMenu({
       <button
         onClick={() => { if (isToday) { onSetBalance(); onClose() } }}
         disabled={!isToday}
-        style={{
-          display: 'block', width: '100%', textAlign: 'left',
-          background: 'transparent', border: 'none',
-          color: isToday ? theme.textPrimary : theme.textMuted,
-          fontSize: 14, padding: '12px 16px', cursor: isToday ? 'pointer' : 'default',
-          fontFamily: 'inherit', minHeight: 44, borderRadius: 0,
-          opacity: isToday ? 1 : 0.6,
-        }}
+        style={btnStyle(isToday)}
         onMouseEnter={e => { if (isToday) (e.currentTarget.style.background = theme.cardHover) }}
         onMouseLeave={e => { (e.currentTarget.style.background = 'transparent') }}
       >
         {isToday ? 'Set balance' : 'Set balance (today only)'}
       </button>
+      <div style={{ borderTop: `1px solid ${theme.border}` }} />
+      <button
+        onClick={() => { if (isToday) { onFuelFill(); onClose() } }}
+        disabled={!isToday}
+        style={btnStyle(isToday)}
+        onMouseEnter={e => { if (isToday) (e.currentTarget.style.background = theme.cardHover) }}
+        onMouseLeave={e => { (e.currentTarget.style.background = 'transparent') }}
+      >
+        {isToday ? 'Fuel fill' : 'Fuel fill (today only)'}
+      </button>
+    </div>
+  )
+}
+
+// ─── Fuel Fill Modal ─────────────────────────────────────────────
+
+function FuelFillModal({
+  state,
+  car,
+  settings,
+  fuelOverride,
+  onSave,
+  onClose,
+  theme,
+}: {
+  state: FuelFillModalState
+  car: { carWeeklyRent: number; tankPrice: number; fillEveryDays: number; dailyMiles: number }
+  settings: Settings
+  fuelOverride: FuelOverride | null
+  onSave: (override: FuelOverride) => void
+  onClose: () => void
+  theme: ThemeTokens
+}) {
+  const fullTankMiles = car.fillEveryDays * car.dailyMiles
+  const initMiles = fuelOverride ? fuelOverride.milesLeft : Math.round(fullTankMiles / 2)
+  const [milesLeft, setMilesLeft] = useState(initMiles)
+
+  useEffect(() => {
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', handleKey)
+    return () => window.removeEventListener('keydown', handleKey)
+  }, [onClose])
+
+  // Compute next fill date from current milesLeft
+  const nextFillInfo = useMemo(() => {
+    if (milesLeft <= 0) return { days: 0, date: state.dateKey }
+    const weekendMiles = settings.weekendDailyMiles ?? 60
+    const weekdayMiles = car.dailyMiles
+    let remaining = milesLeft
+    let currentDate = new Date(state.dateKey)
+    let daysCount = 0
+    while (remaining > 0 && daysCount < 365) {
+      const miles = isWeekend(currentDate) ? weekendMiles : weekdayMiles
+      remaining -= miles
+      daysCount++
+      currentDate = new Date(currentDate.getTime() + 86400000)
+    }
+    const fillDate = new Date(state.dateKey)
+    fillDate.setDate(fillDate.getDate() + daysCount)
+    const yr = fillDate.getFullYear()
+    const mo = String(fillDate.getMonth() + 1).padStart(2, '0')
+    const da = String(fillDate.getDate()).padStart(2, '0')
+    return { days: daysCount, date: `${yr}-${mo}-${da}` }
+  }, [milesLeft, state.dateKey, car.dailyMiles, settings.weekendDailyMiles])
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 600,
+        background: theme.overlay,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        padding: 20,
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          background: theme.card,
+          border: `1px solid ${theme.border}`,
+          borderRadius: 16,
+          padding: 24,
+          width: '100%',
+          maxWidth: 360,
+          boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
+        }}
+      >
+        <div style={{ fontSize: 16, fontWeight: 700, color: theme.textPrimary, marginBottom: 6 }}>
+          Set fuel level
+        </div>
+        <div style={{ fontSize: 12, color: theme.textMuted, marginBottom: 18 }}>
+          {state.dateLabel}
+        </div>
+
+        {/* Full tank button */}
+        <button
+          onClick={() => {
+            onSave({ dateKey: state.dateKey, milesLeft: fullTankMiles })
+            onClose()
+          }}
+          style={{
+            width: '100%', background: `${theme.green}22`,
+            border: `1px solid ${theme.green}66`,
+            color: theme.green, borderRadius: 8, padding: '10px',
+            fontSize: 14, fontWeight: 700, cursor: 'pointer',
+            fontFamily: 'inherit', marginBottom: 16, minHeight: 44,
+          }}
+        >
+          Full tank ({fullTankMiles} miles)
+        </button>
+
+        {/* Slider */}
+        <div style={{ marginBottom: 6 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+            <span style={{ fontSize: 13, color: theme.textSecondary }}>Miles remaining</span>
+            <span style={{ fontSize: 16, fontWeight: 700, color: theme.textPrimary, fontVariantNumeric: 'tabular-nums' }}>
+              {milesLeft}
+            </span>
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={600}
+            value={milesLeft}
+            onChange={e => setMilesLeft(Number(e.target.value))}
+            style={{
+              width: '100%',
+              background: `linear-gradient(to right, ${theme.amber} ${Math.min((milesLeft / 600) * 100, 100)}%, ${theme.sliderTrack} ${Math.min((milesLeft / 600) * 100, 100)}%)`,
+            }}
+          />
+        </div>
+
+        {/* Projected fill */}
+        <div style={{
+          fontSize: 12, color: theme.textMuted, marginBottom: 18,
+          padding: '8px 10px', background: theme.bg, borderRadius: 8,
+        }}>
+          Next fill in ~{nextFillInfo.days} day{nextFillInfo.days !== 1 ? 's' : ''} (approx {nextFillInfo.date})
+        </div>
+
+        {/* Actions */}
+        <div style={{ display: 'flex', gap: 10 }}>
+          <button
+            onClick={() => { onSave({ dateKey: state.dateKey, milesLeft }); onClose() }}
+            style={{
+              flex: 1, background: theme.blue, color: '#fff', border: 'none',
+              borderRadius: 8, padding: '10px', fontSize: 14, fontWeight: 700,
+              cursor: 'pointer', minHeight: 44, fontFamily: 'inherit',
+            }}
+          >
+            Save
+          </button>
+          <button
+            onClick={onClose}
+            style={{
+              flex: 1, background: theme.border, color: theme.textSecondary, border: 'none',
+              borderRadius: 8, padding: '10px', fontSize: 14, cursor: 'pointer',
+              minHeight: 44, fontFamily: 'inherit',
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -1829,6 +2053,34 @@ function SettingsPanel({
           </div>
         </div>
 
+        {/* Pay cycle */}
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: theme.blueLight, marginBottom: 12 }}>Pay cycle</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div>
+              <label style={labelStyle}>Payday / cycle start day (1–28)</label>
+              <input
+                type="number"
+                min={1}
+                max={28}
+                value={local.paydayDay ?? 8}
+                onChange={e => setLocal(prev => ({ ...prev, paydayDay: Number(e.target.value) }))}
+                style={fieldStyle}
+              />
+            </div>
+            <div>
+              <label style={labelStyle}>Weekend daily miles</label>
+              <input
+                type="number"
+                min={0}
+                value={local.weekendDailyMiles ?? 60}
+                onChange={e => setLocal(prev => ({ ...prev, weekendDailyMiles: Number(e.target.value) }))}
+                style={fieldStyle}
+              />
+            </div>
+          </div>
+        </div>
+
         {/* Current car */}
         <div style={{ marginBottom: 24 }}>
           <div style={{ fontSize: 14, fontWeight: 600, color: theme.blueLight, marginBottom: 12 }}>Current car (Apr 2026)</div>
@@ -2334,6 +2586,12 @@ export default function FinanceSimulator() {
   // stored per month in localStorage as fin-carry-toggle-YYYY-MM
   const [carryToggles, setCarryToggles] = useState<Record<string, boolean>>({})
 
+  // Fuel override
+  const [fuelOverride, setFuelOverride] = useState<FuelOverride | null>(null)
+
+  // Fuel fill modal
+  const [fuelFillModal, setFuelFillModal] = useState<FuelFillModalState | null>(null)
+
   // Compute today's date key once
   const todayKey = useMemo(() => todayDateKey(), [])
 
@@ -2349,6 +2607,8 @@ export default function FinanceSimulator() {
           afjDailyRate: parsed.afjDailyRate ?? DEFAULT_SETTINGS.afjDailyRate,
           extraIncomes: parsed.extraIncomes ?? [],
           darkMode: parsed.darkMode ?? false,
+          paydayDay: parsed.paydayDay ?? DEFAULT_SETTINGS.paydayDay,
+          weekendDailyMiles: parsed.weekendDailyMiles ?? DEFAULT_SETTINGS.weekendDailyMiles,
         })
       }
       const sl = localStorage.getItem('fin-sliders')
@@ -2363,7 +2623,7 @@ export default function FinanceSimulator() {
         })
       }
       const allOverrides: Record<string, Record<string, number>> = {}
-      for (const m of MONTHS) {
+      for (const m of ALL_MONTHS) {
         const key = `fin-bill-days-${m.year}-${String(m.month).padStart(2, '0')}`
         const val = localStorage.getItem(key)
         if (val) allOverrides[key] = JSON.parse(val)
@@ -2372,7 +2632,7 @@ export default function FinanceSimulator() {
 
       // Load weekend states
       const wkdStates: Record<string, WeekendState> = {}
-      for (const m of MONTHS) {
+      for (const m of ALL_MONTHS) {
         const key = weekendStateKey(m.month, m.year)
         const val = localStorage.getItem(key)
         if (val) {
@@ -2412,7 +2672,7 @@ export default function FinanceSimulator() {
 
       // Load carry toggles for all months
       const toggles: Record<string, boolean> = {}
-      for (const m of MONTHS) {
+      for (const m of ALL_MONTHS) {
         const ymKey = `${m.year}-${String(m.month).padStart(2, '0')}`
         const raw = localStorage.getItem(`fin-carry-toggle-${ymKey}`)
         if (raw !== null) {
@@ -2420,6 +2680,12 @@ export default function FinanceSimulator() {
         }
       }
       setCarryToggles(toggles)
+
+      // Load fuel override
+      const foRaw = localStorage.getItem('fin-fuel-override')
+      if (foRaw) {
+        try { setFuelOverride(JSON.parse(foRaw)) } catch { /* ignore */ }
+      }
 
     } catch { /* ignore */ }
     setHydrated(true)
@@ -2471,38 +2737,59 @@ export default function FinanceSimulator() {
     localStorage.setItem('fin-balance-overrides', JSON.stringify(balanceOverrides))
   }, [balanceOverrides, hydrated])
 
+  // Persist fuel override
+  useEffect(() => {
+    if (!hydrated) return
+    if (fuelOverride) {
+      localStorage.setItem('fin-fuel-override', JSON.stringify(fuelOverride))
+    } else {
+      localStorage.removeItem('fin-fuel-override')
+    }
+  }, [fuelOverride, hydrated])
+
   // Theme object
   const theme = settings.darkMode ? DARK : LIGHT
 
-  // Visible months (hide past months for UI, but compute all for carry-forward)
+  // Visible months — show from the start of the current pay cycle
   const today = useMemo(() => new Date(), [])
-  const todayMonthVal = today.getFullYear() * 100 + (today.getMonth() + 1)
+
+  const currentCycleMonth = useMemo(() => {
+    const d = today.getDate()
+    const m = today.getMonth() + 1
+    const y = today.getFullYear()
+    const payday = settings.paydayDay ?? 8
+    if (d < payday) {
+      return m === 1 ? { month: 12, year: y - 1 } : { month: m - 1, year: y }
+    }
+    return { month: m, year: y }
+  }, [today, settings.paydayDay])
+
+  const currentCycleMonthVal = currentCycleMonth.year * 100 + currentCycleMonth.month
 
   const visibleMonths = useMemo(
-    () => MONTHS.filter(m => m.year * 100 + m.month >= todayMonthVal),
-    [todayMonthVal]
+    () => ALL_MONTHS.filter(m => m.year * 100 + m.month >= currentCycleMonthVal),
+    [currentCycleMonthVal]
   )
 
   // If selectedMonthIdx points to a hidden month, snap to first visible
   useEffect(() => {
     if (!hydrated) return
-    const selectedMonth = MONTHS[selectedMonthIdx]
+    const selectedMonth = ALL_MONTHS[selectedMonthIdx]
     if (selectedMonth) {
-      const isVisible = selectedMonth.year * 100 + selectedMonth.month >= todayMonthVal
+      const isVisible = selectedMonth.year * 100 + selectedMonth.month >= currentCycleMonthVal
       if (!isVisible) {
-        // find first visible index in MONTHS
-        const firstVisibleIdx = MONTHS.findIndex(m => m.year * 100 + m.month >= todayMonthVal)
+        const firstVisibleIdx = ALL_MONTHS.findIndex(m => m.year * 100 + m.month >= currentCycleMonthVal)
         if (firstVisibleIdx >= 0) setSelectedMonthIdx(firstVisibleIdx)
       }
     }
-  }, [hydrated, selectedMonthIdx, todayMonthVal])
+  }, [hydrated, selectedMonthIdx, currentCycleMonthVal])
 
-  // Simulate all months — still compute ALL for carry-forward accuracy
+  // Simulate all months — iterate ALL_MONTHS for carry-forward accuracy
   const allSimulations = useMemo(() => {
     let pot = 0
     let prevRingFenceAccumulated = 0
     const sims: { month: MonthOption; days: DayData[]; endPot: number; ringFenceAccumulated: number }[] = []
-    for (const m of MONTHS) {
+    for (const m of ALL_MONTHS) {
       const mKey = `fin-bill-days-${m.year}-${String(m.month).padStart(2, '0')}`
       const overrides = billDayOverrides[mKey] ?? {}
       const wkdKey = weekendStateKey(m.month, m.year)
@@ -2511,6 +2798,7 @@ export default function FinanceSimulator() {
         m.month, m.year, sliders, settings, overrides, pot, prevRingFenceAccumulated,
         wkdState.workedDays, wkdState.weekendRate, customBills, hiddenBillIds,
         wkdState.weekendBillsPerDay, wkdState.weekendSavings, balanceOverrides,
+        fuelOverride,
       )
       sims.push({ month: m, days, endPot, ringFenceAccumulated })
       pot = endPot
@@ -2520,10 +2808,10 @@ export default function FinanceSimulator() {
       prevRingFenceAccumulated = carryApplies ? ringFenceAccumulated : 0
     }
     return sims
-  }, [sliders, settings, billDayOverrides, allWeekendStates, customBills, hiddenBillIds, balanceOverrides, carryToggles])
+  }, [sliders, settings, billDayOverrides, allWeekendStates, customBills, hiddenBillIds, balanceOverrides, carryToggles, fuelOverride])
 
   const currentSim = allSimulations[selectedMonthIdx]
-  const selectedMonth = MONTHS[selectedMonthIdx]
+  const selectedMonth = ALL_MONTHS[selectedMonthIdx]
 
   const monthKey = `fin-bill-days-${selectedMonth.year}-${String(selectedMonth.month).padStart(2, '0')}`
   const currentBillOverrides = billDayOverrides[monthKey] ?? {}
@@ -2670,6 +2958,14 @@ export default function FinanceSimulator() {
     })
   }
 
+  function openFuelFillModal(menu: DayCardMenuState) {
+    setFuelFillModal({ open: true, dateKey: menu.dateKey, dateLabel: menu.dateLabel })
+  }
+
+  function handleSaveFuelOverride(override: FuelOverride) {
+    setFuelOverride(override)
+  }
+
   // Dynamic slider maxes
   const billsMax = sliders.normalDayRate
   const savingsMax = Math.max(0, sliders.normalDayRate - sliders.billsPerDay)
@@ -2729,6 +3025,7 @@ export default function FinanceSimulator() {
           menu={dayCardMenu}
           onClose={() => setDayCardMenu(null)}
           onSetBalance={() => openBalanceModal(dayCardMenu)}
+          onFuelFill={() => openFuelFillModal(dayCardMenu)}
           isToday={dayCardMenu.dateKey === todayKey}
           theme={theme}
         />
@@ -2742,6 +3039,19 @@ export default function FinanceSimulator() {
           onRemove={handleRemoveBalance}
           onClose={() => setBalanceOverrideModal(null)}
           hasExisting={balanceOverrides[balanceOverrideModal.dateKey] !== undefined}
+          theme={theme}
+        />
+      )}
+
+      {/* Fuel fill modal */}
+      {fuelFillModal?.open && (
+        <FuelFillModal
+          state={fuelFillModal}
+          car={getCarSettings(selectedMonth.month, selectedMonth.year, settings)}
+          settings={settings}
+          fuelOverride={fuelOverride}
+          onSave={handleSaveFuelOverride}
+          onClose={() => setFuelFillModal(null)}
           theme={theme}
         />
       )}
@@ -2760,7 +3070,7 @@ export default function FinanceSimulator() {
             WebkitOverflowScrolling: 'touch',
           }}>
             {visibleMonths.map((m) => {
-              const i = MONTHS.indexOf(m)
+              const i = ALL_MONTHS.indexOf(m)
               const sim = allSimulations[i]
               const endPot = sim ? sim.endPot : 0
               const hasDeficit = sim ? sim.days.some(d => d.isPotNegative) : false
@@ -2813,7 +3123,7 @@ export default function FinanceSimulator() {
             {selectedMonth.label}
           </h1>
           <span style={{ fontSize: 12, color: theme.textMuted }}>
-            cycle: {selectedMonth.short} 8 → {selectedMonth.month === 12 ? 'Jan' : MONTH_SHORT[selectedMonth.month]} 7
+            cycle: {selectedMonth.short} {settings.paydayDay ?? 8} → {selectedMonth.month === 12 ? 'Jan' : MONTH_SHORT[selectedMonth.month]} {(settings.paydayDay ?? 8) - 1}
           </span>
         </div>
 
