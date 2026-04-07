@@ -343,6 +343,15 @@ function getCarSettings(month: number, year: number, settings: Settings): {
 }
 
 function calcAFJ(prevMonth: number, prevYear: number, afjDailyRate: number, holidays: SchoolHoliday[]): number {
+  // Count actual weekdays in the month
+  const daysInMonth = new Date(prevYear, prevMonth, 0).getDate()
+  let totalWeekdays = 0
+  for (let d = 1; d <= daysInMonth; d++) {
+    const date = new Date(prevYear, prevMonth - 1, d)
+    if (!isWeekend(date)) totalWeekdays++
+  }
+
+  // Subtract weekdays that fall inside school holidays
   let holidayDaysLost = 0
   for (const h of holidays) {
     const start = new Date(h.startDate)
@@ -355,7 +364,8 @@ function calcAFJ(prevMonth: number, prevYear: number, afjDailyRate: number, holi
       cur.setDate(cur.getDate() + 1)
     }
   }
-  const workingDays = Math.max(0, AFJ_FULL_TERM_DAYS - holidayDaysLost)
+
+  const workingDays = Math.max(0, totalWeekdays - holidayDaysLost)
   return workingDays * afjDailyRate
 }
 
