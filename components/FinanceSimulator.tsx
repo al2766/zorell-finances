@@ -2360,8 +2360,9 @@ function SettingsPanel({
                     type="number"
                     min={0}
                     max={31}
+                    step={0.5}
                     value={val}
-                    onChange={e => setLocal(prev => ({ ...prev, afjWorkingDays: { ...(prev.afjWorkingDays ?? {}), [m]: Number(e.target.value) } }))}
+                    onChange={e => setLocal(prev => ({ ...prev, afjWorkingDays: { ...(prev.afjWorkingDays ?? {}), [m]: parseFloat(e.target.value) || 0 } }))}
                     style={{ ...fieldStyle, width: 56, textAlign: 'center', padding: '6px 8px', fontSize: 14, fontWeight: 700 }}
                   />
                 </div>
