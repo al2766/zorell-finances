@@ -87,6 +87,23 @@ interface ExtraIncome {
   day: number
 }
 
+interface SchoolHoliday {
+  id: string
+  name: string
+  startDate: string  // 'YYYY-MM-DD'
+  endDate: string    // 'YYYY-MM-DD'
+}
+
+const DEFAULT_SCHOOL_HOLIDAYS: SchoolHoliday[] = [
+  { id: 'easter-2026',       name: 'Easter',             startDate: '2026-04-03', endDate: '2026-04-17' },
+  { id: 'summer-half-2026',  name: 'Summer half term',   startDate: '2026-05-26', endDate: '2026-05-29' },
+  { id: 'teacher-jul-2026',  name: 'Teacher training',   startDate: '2026-07-26', endDate: '2026-07-29' },
+  { id: 'summer-2026',       name: 'Summer holidays',    startDate: '2026-08-23', endDate: '2026-08-31' },
+  { id: 'teacher-sep-2026',  name: 'Teacher training',   startDate: '2026-09-01', endDate: '2026-09-02' },
+  { id: 'autumn-half-2026',  name: 'Autumn half term',   startDate: '2026-10-27', endDate: '2026-10-31' },
+  { id: 'christmas-2026',    name: 'Christmas',          startDate: '2026-12-18', endDate: '2027-01-02' },
+]
+
 interface Settings {
   carWeeklyRent: number
   tankPrice: number
@@ -99,6 +116,7 @@ interface Settings {
   paydayDay: number
   weekendDailyMiles: number
   carRentDayOfWeek: number  // 0=Sun 1=Mon 2=Tue 3=Wed 4=Thu 5=Fri 6=Sat
+  schoolHolidays: SchoolHoliday[]
 }
 
 interface FuelOverride {
@@ -253,6 +271,7 @@ const DEFAULT_SETTINGS: Settings = {
   paydayDay: 8,
   weekendDailyMiles: 60,
   carRentDayOfWeek: 3,  // Wednesday
+  schoolHolidays: DEFAULT_SCHOOL_HOLIDAYS,
 }
 
 const DEFAULT_SLIDERS: Sliders = {
@@ -282,9 +301,9 @@ function todayDateKey(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
-function isDateInHoliday(date: Date): { inHoliday: boolean; name: string | null } {
+function isDateInHoliday(date: Date, holidays: SchoolHoliday[]): { inHoliday: boolean; name: string | null } {
   const d = date.getTime()
-  for (const h of HOLIDAYS) {
+  for (const h of holidays) {
     const start = new Date(h.startDate).getTime()
     const end = new Date(h.endDate).getTime() + 86400000
     if (d >= start && d < end) {
@@ -323,9 +342,9 @@ function getCarSettings(month: number, year: number, settings: Settings): {
   return result
 }
 
-function calcAFJ(prevMonth: number, prevYear: number, afjDailyRate: number): number {
+function calcAFJ(prevMonth: number, prevYear: number, afjDailyRate: number, holidays: SchoolHoliday[]): number {
   let holidayDaysLost = 0
-  for (const h of HOLIDAYS) {
+  for (const h of holidays) {
     const start = new Date(h.startDate)
     const end = new Date(h.endDate)
     const cur = new Date(start)
@@ -527,7 +546,8 @@ function simulateCycle(
 
   const prevMonth = month === 1 ? 12 : month - 1
   const prevYear = month === 1 ? year - 1 : year
-  const afjAmount = calcAFJ(prevMonth, prevYear, settings.afjDailyRate)
+  const schoolHolidays = settings.schoolHolidays ?? DEFAULT_SCHOOL_HOLIDAYS
+  const afjAmount = calcAFJ(prevMonth, prevYear, settings.afjDailyRate, schoolHolidays)
 
   const car = getCarSettings(month, year, settings)
   const carRentDayOfWeek = settings.carRentDayOfWeek ?? 3
@@ -619,7 +639,7 @@ function simulateCycle(
     const isFirstDay = i === 0
 
     const weekend = isWeekend(date)
-    const { inHoliday, name: holidayName } = isDateInHoliday(date)
+    const { inHoliday, name: holidayName } = isDateInHoliday(date, schoolHolidays)
     const isOffDay = weekend || inHoliday
 
     const isSchoolHolidayWeekday = !weekend && inHoliday
@@ -2110,6 +2130,45 @@ function SettingsPanel({
     setLocal(prev => ({ ...prev, extraIncomes: prev.extraIncomes.filter((_, idx) => idx !== i) }))
   }
 
+  // School holidays
+  const [holModal, setHolModal] = useState<{ open: boolean; name: string; startDate: string; endDate: string; editIndex: number | null }>({
+    open: false, name: '', startDate: '', endDate: '', editIndex: null,
+  })
+
+  function openAddHoliday() {
+    setHolModal({ open: true, name: '', startDate: '', endDate: '', editIndex: null })
+  }
+
+  function openEditHoliday(i: number) {
+    const h = local.schoolHolidays[i]
+    setHolModal({ open: true, name: h.name, startDate: h.startDate, endDate: h.endDate, editIndex: i })
+  }
+
+  function saveHoliday() {
+    if (!holModal.name || !holModal.startDate || !holModal.endDate) return
+    const entry: SchoolHoliday = {
+      id: holModal.editIndex !== null ? local.schoolHolidays[holModal.editIndex].id : `hol-${Date.now()}`,
+      name: holModal.name,
+      startDate: holModal.startDate,
+      endDate: holModal.endDate,
+    }
+    setLocal(prev => {
+      const list = [...(prev.schoolHolidays ?? [])]
+      if (holModal.editIndex !== null) {
+        list[holModal.editIndex] = entry
+      } else {
+        list.push(entry)
+      }
+      list.sort((a, b) => a.startDate.localeCompare(b.startDate))
+      return { ...prev, schoolHolidays: list }
+    })
+    setHolModal(m => ({ ...m, open: false }))
+  }
+
+  function removeHoliday(i: number) {
+    setLocal(prev => ({ ...prev, schoolHolidays: (prev.schoolHolidays ?? []).filter((_, idx) => idx !== i) }))
+  }
+
   const fieldStyle: React.CSSProperties = {
     background: theme.bg, border: `1px solid ${theme.border}`, borderRadius: 8,
     color: theme.textPrimary, padding: '8px 12px', fontSize: 14, width: '100%', outline: 'none',
@@ -2354,6 +2413,46 @@ function SettingsPanel({
             </div>
           ))}
         </div>
+
+        {/* School holidays */}
+        <div style={{ marginTop: 24 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <span style={{ fontSize: 14, fontWeight: 600, color: theme.blueLight }}>School holidays</span>
+            <button
+              onClick={openAddHoliday}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                background: `${theme.amber}1a`, border: `1px solid ${theme.amber}4d`,
+                color: theme.amber, borderRadius: 8, padding: '6px 12px', fontSize: 12, cursor: 'pointer',
+              }}
+            >
+              <PlusIcon size={14} /> Add period
+            </button>
+          </div>
+
+          {(local.schoolHolidays ?? []).length === 0 && (
+            <div style={{ fontSize: 13, color: theme.textMuted, padding: '12px', background: theme.card, borderRadius: 8 }}>
+              No school holidays configured
+            </div>
+          )}
+
+          {(local.schoolHolidays ?? []).map((h, i) => (
+            <div key={h.id} style={{
+              background: theme.card, border: `1px solid ${theme.border}`, borderRadius: 10,
+              padding: '12px 14px', marginBottom: 8,
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            }}>
+              <div>
+                <div style={{ fontSize: 13, color: theme.textPrimary, fontWeight: 600, marginBottom: 4 }}>{h.name}</div>
+                <div style={{ fontSize: 12, color: theme.textMuted }}>{h.startDate} → {h.endDate}</div>
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button onClick={() => openEditHoliday(i)} style={{ background: theme.border, border: 'none', color: theme.textSecondary, borderRadius: 6, padding: '5px 10px', fontSize: 12, cursor: 'pointer' }}>Edit</button>
+                <button onClick={() => removeHoliday(i)} style={{ background: `${theme.red}1a`, border: `1px solid ${theme.red}4d`, color: theme.red, borderRadius: 6, padding: '5px 10px', fontSize: 12, cursor: 'pointer' }}>Remove</button>
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
 
       {/* Car change modal */}
@@ -2397,6 +2496,62 @@ function SettingsPanel({
                 {modal.editIndex !== null ? 'Save' : 'Add'}
               </button>
               <button onClick={() => setModal(m => ({ ...m, open: false }))} style={{ flex: 1, background: theme.border, color: theme.textSecondary, border: 'none', borderRadius: 8, padding: '10px', fontSize: 14, cursor: 'pointer' }}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* School holiday modal */}
+      {holModal.open && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 300, background: theme.overlay,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+        }}>
+          <div style={{ background: theme.card, border: `1px solid ${theme.border}`, borderRadius: 16, padding: 24, width: '100%', maxWidth: 360 }}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: theme.textPrimary, marginBottom: 16 }}>
+              {holModal.editIndex !== null ? 'Edit holiday' : 'Add school holiday'}
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 16 }}>
+              <div>
+                <label style={labelStyle}>Name</label>
+                <input
+                  type="text"
+                  value={holModal.name}
+                  onChange={e => setHolModal(m => ({ ...m, name: e.target.value }))}
+                  style={fieldStyle}
+                  placeholder="e.g. Easter"
+                />
+              </div>
+              <div>
+                <label style={labelStyle}>From (YYYY-MM-DD)</label>
+                <input
+                  type="date"
+                  value={holModal.startDate}
+                  onChange={e => setHolModal(m => ({ ...m, startDate: e.target.value }))}
+                  style={fieldStyle}
+                />
+              </div>
+              <div>
+                <label style={labelStyle}>To (YYYY-MM-DD)</label>
+                <input
+                  type="date"
+                  value={holModal.endDate}
+                  onChange={e => setHolModal(m => ({ ...m, endDate: e.target.value }))}
+                  style={fieldStyle}
+                />
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button
+                onClick={saveHoliday}
+                disabled={!holModal.name.trim() || !holModal.startDate || !holModal.endDate}
+                style={{ flex: 1, background: holModal.name.trim() && holModal.startDate && holModal.endDate ? theme.amber : theme.border, color: '#fff', border: 'none', borderRadius: 8, padding: '10px', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}
+              >
+                {holModal.editIndex !== null ? 'Save' : 'Add'}
+              </button>
+              <button onClick={() => setHolModal(m => ({ ...m, open: false }))} style={{ flex: 1, background: theme.border, color: theme.textSecondary, border: 'none', borderRadius: 8, padding: '10px', fontSize: 14, cursor: 'pointer' }}>
                 Cancel
               </button>
             </div>
@@ -3490,6 +3645,7 @@ export default function FinanceSimulator() {
           paydayDay: parsed.paydayDay ?? DEFAULT_SETTINGS.paydayDay,
           weekendDailyMiles: parsed.weekendDailyMiles ?? DEFAULT_SETTINGS.weekendDailyMiles,
           carRentDayOfWeek: parsed.carRentDayOfWeek ?? DEFAULT_SETTINGS.carRentDayOfWeek,
+          schoolHolidays: parsed.schoolHolidays ?? DEFAULT_SETTINGS.schoolHolidays,
         })
       }
       const sl = localStorage.getItem('fin-sliders')
