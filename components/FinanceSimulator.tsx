@@ -13,6 +13,8 @@ import {
 } from '@dnd-kit/core'
 import { useDroppable, useDraggable } from '@dnd-kit/core'
 import { BILLS, SEED_CUSTOM_BILLS, HOLIDAYS, MONTH_SHORT } from '@/lib/data'
+import { signInWithGoogle, signOutUser, onAuth, loadFromFirestore, saveToFirestore, type FinanceSnapshot } from '@/lib/firebaseClient'
+import type { User } from 'firebase/auth'
 import type { Bill, CustomBill } from '@/lib/data'
 import AddBillModal from '@/components/AddBillModal'
 
@@ -3488,6 +3490,12 @@ export default function FinanceSimulator() {
   // Per-day bill contribution overrides: key = 'YYYY-MM-DD', value = contribution amount
   const [billContribOverrides, setBillContribOverrides] = useState<Record<string, number>>({})
 
+  // Firebase auth
+  const [user, setUser] = useState<User | null>(null)
+  const [authLoading, setAuthLoading] = useState(true)
+  const [cloudSynced, setCloudSynced] = useState(false)
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   // Compute today's date key once
   const todayKey = useMemo(() => todayDateKey(), [])
 
@@ -3594,6 +3602,55 @@ export default function FinanceSimulator() {
     } catch { /* ignore */ }
     setHydrated(true)
   }, [])
+
+  // Firebase auth listener
+  useEffect(() => {
+    const unsub = onAuth((u) => {
+      setUser(u)
+      setAuthLoading(false)
+    })
+    return unsub
+  }, [])
+
+  // Cloud sync: when user + hydrated → load from Firestore or upload local state
+  useEffect(() => {
+    if (!user || !hydrated || cloudSynced) return
+    const sync = async () => {
+      const snap = await loadFromFirestore(user.uid)
+      if (snap) {
+        // Remote data exists — apply it
+        if (snap.settings) setSettings({ ...DEFAULT_SETTINGS, ...(snap.settings as Settings) })
+        if (snap.sliders) setSliders(snap.sliders as Sliders)
+        if (snap.customBills) setCustomBills(snap.customBills as CustomBill[])
+        if (snap.billDayOverrides) setBillDayOverrides(snap.billDayOverrides as Record<string, Record<string, number>>)
+        if (snap.balanceOverrides) setBalanceOverrides(snap.balanceOverrides as Record<string, number>)
+        if (snap.billContribOverrides) setBillContribOverrides(snap.billContribOverrides as Record<string, number>)
+        if (snap.weekendStates) setAllWeekendStates(snap.weekendStates as Record<string, WeekendState>)
+        if (snap.carryToggles) setCarryToggles(snap.carryToggles as Record<string, boolean>)
+      } else {
+        // No remote data — upload current localStorage state as source of truth
+        await saveToFirestore(user.uid, {
+          settings, sliders, customBills, billDayOverrides,
+          balanceOverrides, billContribOverrides, weekendStates: allWeekendStates, carryToggles,
+        })
+      }
+      setCloudSynced(true)
+    }
+    sync()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, hydrated, cloudSynced])
+
+  // Auto-save to Firestore (debounced 3s) after any data change
+  useEffect(() => {
+    if (!user || !cloudSynced) return
+    const snap: FinanceSnapshot = {
+      settings, sliders, customBills, billDayOverrides,
+      balanceOverrides, billContribOverrides, weekendStates: allWeekendStates, carryToggles,
+    }
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+    saveTimerRef.current = setTimeout(() => { saveToFirestore(user.uid, snap) }, 3000)
+    return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current) }
+  }, [settings, sliders, customBills, billDayOverrides, balanceOverrides, billContribOverrides, allWeekendStates, carryToggles, user, cloudSynced])
 
   // Persist settings
   useEffect(() => {
@@ -3895,10 +3952,31 @@ export default function FinanceSimulator() {
 
   const isCurrentRealMonth = selectedMonth.year === todayYear && selectedMonth.month === todayMonthNum
 
-  if (!hydrated) {
+  if (!hydrated || authLoading) {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100dvh', color: '#94a3b8', fontSize: 14, background: '#f8fafc' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100dvh', color: '#94a3b8', fontSize: 14, background: '#080d14' }}>
         Loading...
+      </div>
+    )
+  }
+
+  if (!user) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100dvh', background: '#080d14', color: '#f1f5f9', gap: 24, padding: 24 }}>
+        <div style={{ fontSize: 22, fontWeight: 700 }}>Finance Simulator</div>
+        <div style={{ fontSize: 14, color: '#94a3b8', textAlign: 'center', maxWidth: 280 }}>Sign in to sync your data across devices</div>
+        <button
+          onClick={signInWithGoogle}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 12,
+            background: '#fff', color: '#0f172a', border: 'none',
+            borderRadius: 12, padding: '14px 24px', fontSize: 15, fontWeight: 600,
+            cursor: 'pointer', boxShadow: '0 2px 16px rgba(0,0,0,0.3)',
+          }}
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+          Sign in with Google
+        </button>
       </div>
     )
   }
@@ -4034,6 +4112,15 @@ export default function FinanceSimulator() {
           >
             <GearIcon size={20} />
           </button>
+          {user?.photoURL && (
+            <button
+              onClick={signOutUser}
+              title={`Signed in as ${user.email}\nTap to sign out`}
+              style={{ flexShrink: 0, background: 'transparent', border: 'none', cursor: 'pointer', padding: '8px 4px' }}
+            >
+              <img src={user.photoURL} alt="avatar" width={26} height={26} style={{ borderRadius: '50%', display: 'block' }} />
+            </button>
+          )}
           <button
             onClick={() => setAiMode(m => !m)}
             style={{
