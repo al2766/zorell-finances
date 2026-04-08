@@ -123,15 +123,14 @@ interface Sliders {
   normalDayRate: number
   offDayRate: number
   billsPerDay: number
-  savingsOnExtra: number
-  offDaySplit: number
+  normalDayCarryOver: number
+  holidayCarryOver: number
+  spendingPerDay: number
 }
 
 interface WeekendState {
   workedDays: number[]
   weekendRate: number
-  weekendBillsPerDay: number
-  weekendSavings: number
 }
 
 interface DayData {
@@ -156,7 +155,9 @@ interface DayData {
   spendingPotAfter: number
   savingsToday: number
   savingsPotAfter: number
-  splitToday: number
+  carryOverToday: number
+  leftover: number
+  dayType: 'nor' | 'hol' | 'rest'
   ringFenceCarryIn: number
   isPotNegative: boolean
   isPayday: boolean
@@ -264,8 +265,9 @@ const DEFAULT_SLIDERS: Sliders = {
   normalDayRate: 70,
   offDayRate: 150,
   billsPerDay: 20,
-  savingsOnExtra: 10,
-  offDaySplit: 40,
+  normalDayCarryOver: 10,
+  holidayCarryOver: 40,
+  spendingPerDay: 30,
 }
 
 // ─── Helpers ────────────────────────────────────────────────────
@@ -496,13 +498,12 @@ function simulateCycle(
   weekendRate: number,
   customBills?: CustomBill[],
   hiddenBillIds?: Set<string>,
-  weekendBillsPerDay?: number,
-  weekendSavings?: number,
   balanceOverrides?: Record<string, number>,
   fuelOverride?: FuelOverride | null,
   billContribOverrides?: Record<string, number>,
+  dayTypeOverrides?: Record<string, 'nor' | 'hol'>,
 ): { days: DayData[]; endPot: number; ringFenceAccumulated: number } {
-  const { normalDayRate, offDayRate, billsPerDay, savingsOnExtra, offDaySplit } = sliders
+  const { normalDayRate, offDayRate, billsPerDay, normalDayCarryOver, holidayCarryOver, spendingPerDay } = sliders
   const paydayDay = settings.paydayDay ?? 8
   const weekendDailyMiles = settings.weekendDailyMiles ?? 60
 
@@ -657,10 +658,15 @@ function simulateCycle(
 
     const billsPotBefore = billsPot
 
-    const _weekendBillsPerDay = weekendBillsPerDay ?? billsPerDay
-    const _weekendSavings = weekendSavings ?? savingsOnExtra
-
     // ── New bills pot logic ─────────────────────────────────────
+
+    // Effective day type: check override first, then default logic
+    const effectiveDayType: 'nor' | 'hol' | 'rest' = (() => {
+      if (dayTypeOverrides?.[dateKey]) return dayTypeOverrides[dateKey]
+      if (isRestDay) return 'rest'
+      if (isSchoolHolidayWeekday || isWorkedWeekend) return 'hol'
+      return 'nor'
+    })()
 
     // Step 1 — income_in for this day's pot calculation
     // First day or balance-override day: use own income. Day after either: zero. Otherwise: prev day's income.
@@ -674,47 +680,56 @@ function simulateCycle(
       income_in = prevBaseIncome + prevExtraIncome
     }
 
-    // Step 2 — bill contribution for this day
-    const defaultContrib = isRestDay ? 0 : (isWorkedWeekend ? _weekendBillsPerDay : billsPerDay)
+    // Step 2 — bill contribution (0 for rest days, override or main slider otherwise)
+    const defaultContrib = effectiveDayType === 'rest' ? 0 : billsPerDay
     const billContrib = billContribOverrides?.[dateKey] ?? defaultContrib
 
-    // Step 3 — daily working amount (income minus bills/car/fuel out)
+    // Step 3 — daily net after bills out
     const totalBillsOut = billsDueAmt + carCost + fuelCost
     let dailyWorking = income_in - totalBillsOut
 
-    // Step 4 — bills pot:
-    // If income covers bills → pot GROWS by contribution amount
-    // If bills exceed income → pot ABSORBS the deficit (shrinks)
+    // Step 4 — feed pots in order: bill pot → carry over → spending → leftover
+    let carryOverToday = 0
+    let spendingToday = 0
+    let leftover = 0
+
     if (dailyWorking > 0) {
-      billsPot += billContrib
-      dailyWorking -= billContrib
+      // Bill pot contribution
+      const contrib = Math.min(billContrib, dailyWorking)
+      billsPot += contrib
+      dailyWorking -= contrib
+
+      if (dailyWorking > 0) {
+        // Carry over (savings ring fence)
+        const carryRate = effectiveDayType === 'nor' ? normalDayCarryOver : (effectiveDayType === 'hol' ? holidayCarryOver : 0)
+        carryOverToday = Math.min(carryRate, dailyWorking)
+        ringFenceAccumulated += carryOverToday
+        dailyWorking -= carryOverToday
+
+        if (dailyWorking > 0) {
+          // Spending pot
+          const spendRate = effectiveDayType === 'rest' ? 0 : spendingPerDay
+          spendingToday = Math.min(spendRate, dailyWorking)
+          dailyWorking -= spendingToday
+
+          // True leftover
+          leftover = dailyWorking
+        }
+      }
     } else {
-      billsPot += dailyWorking  // dailyWorking is negative — pot absorbs shortfall
+      // Bills exceed income — pot absorbs deficit
+      billsPot += dailyWorking
       dailyWorking = 0
     }
 
-    // Step 5 — apply balance override: replace pot value, mark next day as reset
+    // Apply balance override after pot update
     if (hasOverrideToday) {
       billsPot = balanceOverrides![dateKey]
     }
 
-    // Step 6 — savings and spending from dailyWorking (post-contribution)
-    let savingsToday = 0
-    let spendingToday = 0
-    let splitToday = 0
+    const savingsToday = carryOverToday
 
-    if (dailyWorking > 0) {
-      if (isSchoolHolidayWeekday) {
-        splitToday = offDaySplit
-        ringFenceAccumulated += offDaySplit
-        dailyWorking -= offDaySplit
-      }
-      const savingsMax = isWorkedWeekend ? _weekendSavings : savingsOnExtra
-      savingsToday = Math.min(savingsMax, Math.max(0, dailyWorking))
-      spendingToday = Math.max(0, dailyWorking - savingsToday)
-    }
-
-    cumulativeSavings += savingsToday
+    cumulativeSavings += carryOverToday
     cumulativeSpending += spendingToday
 
     // Step 7 — store previous day values for next iteration
@@ -758,7 +773,9 @@ function simulateCycle(
       spendingPotAfter: cumulativeSpending,
       savingsToday,
       savingsPotAfter: cumulativeSavings,
-      splitToday,
+      carryOverToday,
+      leftover,
+      dayType: effectiveDayType,
       ringFenceCarryIn: carryInToday,
       isPotNegative: billsPot < 0,
       isPayday,
@@ -1418,6 +1435,7 @@ function DayCard({
   billContrib,
   onContribChange,
   isContribOverridden,
+  onDayTypeToggle,
 }: {
   day: DayData
   monthShort: string
@@ -1427,6 +1445,7 @@ function DayCard({
   billContrib: number
   onContribChange: (dateKey: string, value: number | null) => void
   isContribOverridden?: boolean
+  onDayTypeToggle?: (dateKey: string) => void
 }) {
   const [expanded, setExpanded] = useState(false)
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -1643,6 +1662,34 @@ function DayCard({
         onChange={onContribChange}
         theme={theme}
       />
+
+      {/* Day type toggle */}
+      <button
+        onClick={e => { e.stopPropagation(); onDayTypeToggle?.(dateKey) }}
+        style={{
+          width: 40,
+          flexShrink: 0,
+          borderRadius: 10,
+          border: `1px solid ${day.dayType === 'nor' ? theme.blue + '66' : day.dayType === 'hol' ? theme.amber + '66' : theme.border}`,
+          background: day.dayType === 'nor' ? theme.blue + '15' : day.dayType === 'hol' ? theme.amber + '15' : theme.cardAlt,
+          color: day.dayType === 'nor' ? theme.blueLight : day.dayType === 'hol' ? theme.amber : theme.textMuted,
+          fontSize: 9,
+          fontWeight: 700,
+          cursor: day.dayType === 'rest' ? 'default' : 'pointer',
+          padding: '6px 2px',
+          textAlign: 'center',
+          letterSpacing: '0.04em',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 2,
+        }}
+        disabled={day.dayType === 'rest'}
+        title={day.dayType === 'rest' ? 'Rest day' : `Toggle day type (currently ${day.dayType.toUpperCase()})`}
+      >
+        <span>{day.dayType === 'rest' ? 'RST' : day.dayType === 'nor' ? 'NOR' : 'HOL'}</span>
+      </button>
     </div>
   )
 }
@@ -2516,8 +2563,6 @@ function WeekendsAccordion({
   wkdState,
   onToggleDay,
   onRateChange,
-  onBillsPerDayChange,
-  onSavingsChange,
   theme,
 }: {
   open: boolean
@@ -2527,15 +2572,11 @@ function WeekendsAccordion({
   wkdState: WeekendState
   onToggleDay: (dom: number) => void
   onRateChange: (v: number) => void
-  onBillsPerDayChange: (v: number) => void
-  onSavingsChange: (v: number) => void
   theme: ThemeTokens
 }) {
   const weekendDates = getWeekendDatesInCycle(month, year)
   const workedCount = wkdState.workedDays.length
   const pct = wkdState.weekendRate > 0 ? Math.min((wkdState.weekendRate / 300) * 100, 100) : 0
-  const billsPct = wkdState.weekendBillsPerDay > 0 ? Math.min((wkdState.weekendBillsPerDay / 100) * 100, 100) : 0
-  const savePct = wkdState.weekendSavings > 0 ? Math.min((wkdState.weekendSavings / 100) * 100, 100) : 0
 
   return (
     <div style={{
@@ -2612,47 +2653,6 @@ function WeekendsAccordion({
             />
           </div>
 
-          {/* Bills pot per day slider */}
-          <div style={{ marginBottom: 14 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-              <span style={{ fontSize: 13, color: workedCount > 0 ? theme.textSecondary : theme.textMuted }}>Bills pot per day (worked wkd)</span>
-              <span style={{ fontSize: 18, fontWeight: 700, color: workedCount > 0 ? theme.blue : theme.textMuted, fontVariantNumeric: 'tabular-nums' }}>
-                {fmt(wkdState.weekendBillsPerDay)}
-              </span>
-            </div>
-            <input
-              type="range"
-              min={0}
-              max={100}
-              value={wkdState.weekendBillsPerDay}
-              onChange={e => onBillsPerDayChange(Number(e.target.value))}
-              style={{
-                width: '100%',
-                background: workedCount > 0 ? `linear-gradient(to right, ${theme.blue} ${billsPct}%, ${theme.sliderTrack} ${billsPct}%)` : theme.sliderTrack,
-              }}
-            />
-          </div>
-
-          {/* Savings per day slider */}
-          <div style={{ marginBottom: 0 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-              <span style={{ fontSize: 13, color: workedCount > 0 ? theme.textSecondary : theme.textMuted }}>Savings (worked wkd)</span>
-              <span style={{ fontSize: 18, fontWeight: 700, color: workedCount > 0 ? theme.purple : theme.textMuted, fontVariantNumeric: 'tabular-nums' }}>
-                {fmt(wkdState.weekendSavings)}
-              </span>
-            </div>
-            <input
-              type="range"
-              min={0}
-              max={100}
-              value={wkdState.weekendSavings}
-              onChange={e => onSavingsChange(Number(e.target.value))}
-              style={{
-                width: '100%',
-                background: workedCount > 0 ? `linear-gradient(to right, ${theme.purple} ${savePct}%, ${theme.sliderTrack} ${savePct}%)` : theme.sliderTrack,
-              }}
-            />
-          </div>
         </div>
       )}
     </div>
@@ -2672,11 +2672,11 @@ function MonthTotals({ days, sliders, theme }: { days: DayData[]; sliders: Slide
   const totalBills = days.reduce((s, d) => s + d.billsDue, 0)
   const totalCar = days.reduce((s, d) => s + d.carCost, 0)
   const totalFuel = days.reduce((s, d) => s + d.fuelCost, 0)
-  const totalSavings = days.length > 0 ? days[days.length - 1].savingsPotAfter : 0
-  const totalSplit = holDays.reduce((s, d) => s + d.splitToday, 0)
+  const totalCarryOver = days.reduce((s, d) => s + d.carryOverToday, 0)
+  const totalLeftover = days.reduce((s, d) => s + d.leftover, 0)
+  const totalSpending = days.reduce((s, d) => s + d.spending, 0)
   const worstPot = Math.min(...days.map(d => d.billsPotAfter))
   const endPot = days.length > 0 ? days[days.length - 1].billsPotAfter : 0
-  const endSpending = days.length > 0 ? days[days.length - 1].spendingPotAfter : 0
   const weekendIncome = workedWkds.reduce((s, d) => s + d.income, 0)
 
   const stats = [
@@ -2688,12 +2688,12 @@ function MonthTotals({ days, sliders, theme }: { days: DayData[]; sliders: Slide
     { label: 'Bills paid', value: fmt(totalBills), color: theme.red },
     { label: 'Car cost', value: fmt(totalCar), color: theme.red },
     { label: 'Fuel cost', value: fmt(totalFuel), color: theme.red },
-    { label: 'Saved', value: fmt(totalSavings), color: theme.purple },
-    { label: 'Split (hol)', value: fmt(totalSplit), color: theme.amber },
+    { label: 'Carry over', value: fmt(totalCarryOver), color: theme.purple },
+    { label: 'Spending', value: fmt(totalSpending), color: theme.purple },
+    { label: 'Leftover', value: fmt(totalLeftover), color: totalLeftover >= 0 ? theme.textSecondary : theme.red },
     { label: 'End pot', value: fmt(endPot), color: endPot >= 0 ? theme.green : theme.red },
     { label: 'Worst dip', value: worstPot < 0 ? `-${fmt(Math.abs(worstPot))}` : fmt(worstPot), color: worstPot < 0 ? theme.red : theme.green },
     { label: 'AFJ received', value: fmt(totalAFJ), color: theme.blue },
-    { label: 'Spending pot', value: fmt(endSpending), color: endSpending >= 0 ? theme.textPrimary : theme.red },
   ]
 
   return (
@@ -2755,9 +2755,10 @@ const OPTIMAL_PROPOSAL: AiProposal = {
   sliders: {
     normalDayRate: 75,
     billsPerDay: 45,
-    savingsOnExtra: 10,
-    offDaySplit: 25,
+    normalDayCarryOver: 10,
+    holidayCarryOver: 25,
     offDayRate: 150,
+    spendingPerDay: 30,
   },
   billDayOverrides: {
     'ionos':       11,
@@ -2825,7 +2826,7 @@ function buildDataDump(
 
   lines.push('--- INCOME SLIDERS ---')
   lines.push(`Normal day: £${sliders.normalDayRate}/d  |  Off-day (holiday): £${sliders.offDayRate}/d  |  Bills pot/d: £${sliders.billsPerDay}`)
-  lines.push(`Savings on extra: £${sliders.savingsOnExtra}  |  Holiday carry-over/d: £${sliders.offDaySplit}`)
+  lines.push(`Normal carry over: £${sliders.normalDayCarryOver}  |  Holiday carry over/d: £${sliders.holidayCarryOver}  |  Spending/d: £${sliders.spendingPerDay}`)
   lines.push('')
 
   const activeBillsList = customBills.filter(cb => !hiddenBillIds.has(cb.id) && cb.frequency === 'monthly')
@@ -2976,7 +2977,7 @@ function ProposalViewScreen({
       const { days, endPot, ringFenceAccumulated } = simulateCycle(
         m.month, m.year, sliders, settings, overrides, pot, prevRingFence,
         [], 80, customBills, new Set<string>(),
-        20, 10, {}, null, {},
+        {}, null, {},
       )
       pot = endPot
       prevRingFence = ringFenceAccumulated
@@ -3161,19 +3162,27 @@ function ProposalViewScreen({
                 theme={theme}
               />
               <SliderRow
-                label="Savings on extra"
-                value={sliders.savingsOnExtra}
+                label="Normal day carry over (£)"
+                value={sliders.normalDayCarryOver}
                 min={0} max={savingsMax}
-                onChange={v => updateSlider('savingsOnExtra', v)}
+                onChange={v => updateSlider('normalDayCarryOver', v)}
                 color={theme.purple}
                 theme={theme}
               />
               <SliderRow
-                label="Holiday carry-over per day"
-                value={sliders.offDaySplit}
+                label="Holiday carry over (£)"
+                value={sliders.holidayCarryOver}
                 min={0} max={sliders.offDayRate}
-                onChange={v => updateSlider('offDaySplit', v)}
+                onChange={v => updateSlider('holidayCarryOver', v)}
                 color={theme.amber}
+                theme={theme}
+              />
+              <SliderRow
+                label="Spending per day (£)"
+                value={sliders.spendingPerDay}
+                min={0} max={sliders.normalDayRate}
+                onChange={v => updateSlider('spendingPerDay', v)}
+                color={theme.purple}
                 theme={theme}
               />
               <button
@@ -3431,7 +3440,7 @@ function AiTab({
 
 // ─── Main Component ─────────────────────────────────────────────
 
-const DEFAULT_WEEKEND_STATE: WeekendState = { workedDays: [], weekendRate: 80, weekendBillsPerDay: 20, weekendSavings: 10 }
+const DEFAULT_WEEKEND_STATE: WeekendState = { workedDays: [], weekendRate: 80 }
 
 function weekendStateKey(month: number, year: number): string {
   return `fin-weekends-${year}-${String(month).padStart(2, '0')}`
@@ -3490,6 +3499,9 @@ export default function FinanceSimulator() {
   // Per-day bill contribution overrides: key = 'YYYY-MM-DD', value = contribution amount
   const [billContribOverrides, setBillContribOverrides] = useState<Record<string, number>>({})
 
+  // Day type overrides: key = 'YYYY-MM-DD', value = 'nor' | 'hol'
+  const [dayTypeOverrides, setDayTypeOverrides] = useState<Record<string, 'nor' | 'hol'>>({})
+
   // Firebase auth
   const [user, setUser] = useState<User | null>(null)
   const [authLoading, setAuthLoading] = useState(true)
@@ -3524,8 +3536,9 @@ export default function FinanceSimulator() {
           normalDayRate: parsed.normalDayRate ?? DEFAULT_SLIDERS.normalDayRate,
           offDayRate: parsed.offDayRate ?? DEFAULT_SLIDERS.offDayRate,
           billsPerDay: parsed.billsPerDay ?? DEFAULT_SLIDERS.billsPerDay,
-          savingsOnExtra: parsed.savingsOnExtra ?? parsed.savingsPerDay ?? DEFAULT_SLIDERS.savingsOnExtra,
-          offDaySplit: parsed.offDaySplit ?? parsed.offDayRingFence ?? DEFAULT_SLIDERS.offDaySplit,
+          normalDayCarryOver: parsed.normalDayCarryOver ?? parsed.savingsOnExtra ?? DEFAULT_SLIDERS.normalDayCarryOver,
+          holidayCarryOver: parsed.holidayCarryOver ?? parsed.offDaySplit ?? DEFAULT_SLIDERS.holidayCarryOver,
+          spendingPerDay: parsed.spendingPerDay ?? DEFAULT_SLIDERS.spendingPerDay,
         })
       }
       const allOverrides: Record<string, Record<string, number>> = {}
@@ -3599,6 +3612,12 @@ export default function FinanceSimulator() {
         try { setBillContribOverrides(JSON.parse(bcoRaw)) } catch { /* ignore */ }
       }
 
+      // Load day type overrides
+      const dtoRaw = localStorage.getItem('fin-day-type-overrides')
+      if (dtoRaw) {
+        try { setDayTypeOverrides(JSON.parse(dtoRaw)) } catch { /* ignore */ }
+      }
+
     } catch { /* ignore */ }
     setHydrated(true)
   }, [])
@@ -3627,11 +3646,12 @@ export default function FinanceSimulator() {
         if (snap.billContribOverrides) setBillContribOverrides(snap.billContribOverrides as Record<string, number>)
         if (snap.weekendStates) setAllWeekendStates(snap.weekendStates as Record<string, WeekendState>)
         if (snap.carryToggles) setCarryToggles(snap.carryToggles as Record<string, boolean>)
+        if (snap.dayTypeOverrides) setDayTypeOverrides(snap.dayTypeOverrides as Record<string, 'nor' | 'hol'>)
       } else {
         // No remote data — upload current localStorage state as source of truth
         await saveToFirestore(user.uid, {
           settings, sliders, customBills, billDayOverrides,
-          balanceOverrides, billContribOverrides, weekendStates: allWeekendStates, carryToggles,
+          balanceOverrides, billContribOverrides, weekendStates: allWeekendStates, carryToggles, dayTypeOverrides,
         })
       }
       setCloudSynced(true)
@@ -3645,12 +3665,12 @@ export default function FinanceSimulator() {
     if (!user || !cloudSynced) return
     const snap: FinanceSnapshot = {
       settings, sliders, customBills, billDayOverrides,
-      balanceOverrides, billContribOverrides, weekendStates: allWeekendStates, carryToggles,
+      balanceOverrides, billContribOverrides, weekendStates: allWeekendStates, carryToggles, dayTypeOverrides,
     }
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
     saveTimerRef.current = setTimeout(() => { saveToFirestore(user.uid, snap) }, 3000)
     return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current) }
-  }, [settings, sliders, customBills, billDayOverrides, balanceOverrides, billContribOverrides, allWeekendStates, carryToggles, user, cloudSynced])
+  }, [settings, sliders, customBills, billDayOverrides, balanceOverrides, billContribOverrides, allWeekendStates, carryToggles, dayTypeOverrides, user, cloudSynced])
 
   // Persist settings
   useEffect(() => {
@@ -3708,6 +3728,12 @@ export default function FinanceSimulator() {
     }
   }, [fuelOverride, hydrated])
 
+  // Persist day type overrides
+  useEffect(() => {
+    if (!hydrated) return
+    localStorage.setItem('fin-day-type-overrides', JSON.stringify(dayTypeOverrides))
+  }, [dayTypeOverrides, hydrated])
+
   // Theme object
   const theme = settings.darkMode ? DARK : LIGHT
 
@@ -3758,8 +3784,7 @@ export default function FinanceSimulator() {
       const { days, endPot, ringFenceAccumulated } = simulateCycle(
         m.month, m.year, sliders, settings, overrides, pot, prevRingFenceAccumulated,
         wkdState.workedDays, wkdState.weekendRate, customBills, hiddenBillIds,
-        wkdState.weekendBillsPerDay, wkdState.weekendSavings, balanceOverrides,
-        fuelOverride, billContribOverrides,
+        balanceOverrides, fuelOverride, billContribOverrides, dayTypeOverrides,
       )
       sims.push({ month: m, days, endPot, ringFenceAccumulated })
       pot = endPot
@@ -3769,7 +3794,7 @@ export default function FinanceSimulator() {
       prevRingFenceAccumulated = carryApplies ? ringFenceAccumulated : 0
     }
     return sims
-  }, [sliders, settings, billDayOverrides, allWeekendStates, customBills, hiddenBillIds, balanceOverrides, carryToggles, fuelOverride, billContribOverrides])
+  }, [sliders, settings, billDayOverrides, allWeekendStates, customBills, hiddenBillIds, balanceOverrides, carryToggles, fuelOverride, billContribOverrides, dayTypeOverrides])
 
   const currentSim = allSimulations[selectedMonthIdx]
   const selectedMonth = ALL_MONTHS[selectedMonthIdx]
@@ -3939,6 +3964,30 @@ export default function FinanceSimulator() {
       localStorage.setItem('fin-bill-contrib-overrides', JSON.stringify(next))
       return next
     })
+  }
+
+  // Day type toggle handler
+  function toggleDayType(dateKey: string) {
+    const current = dayTypeOverrides[dateKey]
+    const day = currentSim.days.find(d => {
+      const dk = `${d.date.getFullYear()}-${String(d.date.getMonth()+1).padStart(2,'0')}-${String(d.dayOfMonth).padStart(2,'0')}`
+      return dk === dateKey
+    })
+    if (!day || day.isRestDay) return
+
+    const defaultType = (day.isSchoolHolidayWeekday || day.isWorkedWeekend) ? 'hol' : 'nor'
+
+    if (!current) {
+      setDayTypeOverrides(prev => ({ ...prev, [dateKey]: defaultType === 'nor' ? 'hol' : 'nor' }))
+    } else if (current !== defaultType) {
+      setDayTypeOverrides(prev => {
+        const next = { ...prev }
+        delete next[dateKey]
+        return next
+      })
+    } else {
+      setDayTypeOverrides(prev => ({ ...prev, [dateKey]: current === 'nor' ? 'hol' : 'nor' }))
+    }
   }
 
   // Dynamic slider maxes
@@ -4186,7 +4235,7 @@ export default function FinanceSimulator() {
             <span style={{ fontSize: 13, fontWeight: 600 }}>Income &amp; allocation sliders</span>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <span style={{ fontSize: 12, color: theme.textMuted }}>
-                {fmt(sliders.normalDayRate)}/d · {fmt(sliders.billsPerDay)} bills · {fmt(sliders.savingsOnExtra)} save
+                {fmt(sliders.normalDayRate)}/d · {fmt(sliders.billsPerDay)} bills · {fmt(sliders.normalDayCarryOver)} carry
               </span>
               <ChevronIcon down={!slidersOpen} size={16} />
             </div>
@@ -4219,19 +4268,27 @@ export default function FinanceSimulator() {
                 theme={theme}
               />
               <SliderRow
-                label="Savings on extra"
-                value={sliders.savingsOnExtra}
+                label="Normal day carry over (£)"
+                value={sliders.normalDayCarryOver}
                 min={0} max={savingsMax}
-                onChange={v => updateSlider('savingsOnExtra', v)}
+                onChange={v => updateSlider('normalDayCarryOver', v)}
                 color={theme.purple}
                 theme={theme}
               />
               <SliderRow
-                label="Holiday carry-over per day"
-                value={sliders.offDaySplit}
+                label="Holiday carry over (£)"
+                value={sliders.holidayCarryOver}
                 min={0} max={sliders.offDayRate}
-                onChange={v => updateSlider('offDaySplit', v)}
+                onChange={v => updateSlider('holidayCarryOver', v)}
                 color={theme.amber}
+                theme={theme}
+              />
+              <SliderRow
+                label="Spending per day (£)"
+                value={sliders.spendingPerDay}
+                min={0} max={sliders.normalDayRate}
+                onChange={v => updateSlider('spendingPerDay', v)}
+                color={theme.purple}
                 theme={theme}
               />
 
@@ -4274,8 +4331,8 @@ export default function FinanceSimulator() {
                 display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8,
               }}>
                 {[
-                  { label: 'Spending (work)', value: fmt(Math.max(0, sliders.normalDayRate - sliders.billsPerDay - sliders.savingsOnExtra)) },
-                  { label: 'Spending (off)', value: fmt(Math.max(0, sliders.offDayRate - sliders.billsPerDay - sliders.offDaySplit)) },
+                  { label: 'Carry (nor)', value: fmt(sliders.normalDayCarryOver) },
+                  { label: 'Carry (hol)', value: fmt(sliders.holidayCarryOver) },
                   { label: 'Bills pot/day', value: `+${fmt(sliders.billsPerDay)}` },
                 ].map(s => (
                   <div key={s.label} style={{ textAlign: 'center' }}>
@@ -4298,8 +4355,6 @@ export default function FinanceSimulator() {
           wkdState={currentWkdState}
           onToggleDay={toggleWorkedDay}
           onRateChange={v => updateWeekendState({ weekendRate: v })}
-          onBillsPerDayChange={v => updateWeekendState({ weekendBillsPerDay: v })}
-          onSavingsChange={v => updateWeekendState({ weekendSavings: v })}
           theme={theme}
         />
 
@@ -4371,6 +4426,7 @@ export default function FinanceSimulator() {
                     billContrib={day.billContrib}
                     onContribChange={handleContribChange}
                     isContribOverridden={billContribOverrides[dk] !== undefined}
+                    onDayTypeToggle={toggleDayType}
                   />
                 )
               })}

@@ -44,6 +44,7 @@ export interface FinanceSnapshot {
   billContribOverrides?: unknown
   weekendStates?: unknown
   carryToggles?: unknown
+  dayTypeOverrides?: unknown
   savedAt?: string
 }
 
