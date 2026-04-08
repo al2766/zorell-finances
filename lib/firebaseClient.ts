@@ -6,6 +6,7 @@ const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
   authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
   projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
+  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
 }
 
 const app = getApps().length ? getApps()[0] : initializeApp(firebaseConfig)
@@ -18,7 +19,8 @@ export async function signInWithGoogle(): Promise<User | null> {
   try {
     const result = await signInWithPopup(auth, provider)
     return result.user
-  } catch {
+  } catch (e) {
+    console.error('Google sign-in error:', e)
     return null
   }
 }
@@ -50,7 +52,8 @@ export async function loadFromFirestore(uid: string): Promise<FinanceSnapshot | 
     const ref = doc(db, 'finance-data', uid)
     const snap = await getDoc(ref)
     return snap.exists() ? (snap.data() as FinanceSnapshot) : null
-  } catch {
+  } catch (e) {
+    console.error('Firestore load error:', e)
     return null
   }
 }
